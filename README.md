@@ -28,7 +28,7 @@ Pozostali:
 
 Niedopuszczalne jest, żeby ktoś z gotowym posiłkiem czekał na miejsce siedzące.
 
-Przy jednym stolikuvmoże siedzieć jedna grupa lub kilka grup, ale jedynie wtedy, gdy są równoliczne.
+Przy jednym stoliku może siedzieć jedna grupa lub kilka grup, ale jedynie wtedy, gdy są równoliczne.
 
 Po zakończeniu jedzenia naczynia zwracane są albo przez każdego klienta z osobna, albo przez jedną osobę w imieniu całej grupy.
 
