@@ -81,4 +81,5 @@ Weryfikacja natychmiastowego opuszczenia lokalu przez klientów, zakończenia pr
 Projekt jest przewidziany do realizacji w języku C / C++ z wykorzystaniem mechanizmów systemu Unix/Linux do obsługi procesów, komunikacji i synchronizacji.
 
 gcc -o bar_mleczny main.c -lpthread
+
 ./bar_mleczny
