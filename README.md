@@ -1,6 +1,7 @@
-# Bar Mleczny
+# BAR MLECZNY
 
 # Repozytorium
+https://github.com/NataliaP5/Projekt_Bar_Mleczny
 
 # Opis projektu
 Projekt polega na zbudowaniu symulacji pracy baru mlecznego w środowisku wieloprocesowym.
