@@ -53,27 +53,27 @@ Przebieg symulacji zapisywany jest do pliku (lub kilku plików) tekstowego. Rapo
 
 # Opis testów
 
-# Test 1 – Standardowy ruch
+Test 1 – Standardowy ruch
 Umiarkowany napływ klientów, brak sygnałów od kierownika.
 Sprawdzenie poprawności podstawowej obsługi (zamówienie → płatność → stolik → posiłek → wyjście) i nieprzekraczania limitu N.
 
-# Test 2 – Klienci bez zamówienia
+Test 2 – Klienci bez zamówienia
 Podwyższony udział klientów, którzy nic nie zamawiają.
 Weryfikacja, że nie zajmują stolików i nie są liczeni jako osoby spożywające posiłek.
 
-# Test 3 – Przydział stolików dla różnych grup
+Test 3 – Przydział stolików dla różnych grup
 Mieszane grupy 1-, 2- i 3-osobowe.
 Sprawdzenie, czy nie ma przekroczeń pojemności stolików i czy różne grupy siadają razem tylko przy równej liczebności.
 
-# Test 4 – Zwiększenie liczby stolików 3-osobowych (sygnał 1)
+Test 4 – Zwiększenie liczby stolików 3-osobowych (sygnał 1)
 W trakcie działania wysyłany jest sygnał 1.
 Kontrola jednorazowego podwojenia X3 i poprawnego uwzględnienia nowych stolików w przydziale.
 
-# Test 5 – Rezerwacje (sygnał 2)
+Test 5 – Rezerwacje (sygnał 2)
 Kierownik żąda rezerwacji części miejsc/stolików (sygnał 2).
 Sprawdzenie, czy zarezerwowane miejsca nie są przydzielane klientom i czy system poprawnie zmniejsza dostępną pojemność sali.
 
-# Test 6 – Pożar i ewakuacja (sygnał 3)
+Test 6 – Pożar i ewakuacja (sygnał 3)
 Wysyłany jest sygnał 3 w trakcie normalnej pracy.
 Weryfikacja natychmiastowego opuszczenia lokalu przez klientów, zakończenia pracy obsługi oraz poprawnego zamknięcia symulacji.
 
