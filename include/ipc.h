@@ -10,6 +10,14 @@
 #define IPC_PERMS 0600
 #define SEM_MUTEX 0
 
+#define MTYPE_CASHIER 1
+#define MTYPE_WORKER  2
+
+#define MSG_PAY_REQ    1
+#define MSG_PAY_REPLY  2
+#define MSG_SERVE_REQ  3
+#define MSG_SERVE_REPLY 4
+
 typedef struct {
     int shm_id;
     int sem_id;
@@ -35,3 +43,8 @@ void sem_lock(int sem_id);
 void sem_unlock(int sem_id);
 
 void ipc_init_tables_for_manager(IPC *ipc, int x1, int x2, int x3, int x4);
+
+int pick_table_and_reserve(IPC *ipc, int group_size, int *out_table);
+void activate_seating(IPC *ipc, int group_size, int table_index);
+void cancel_reservation(IPC *ipc, int group_size, int table_index);
+void finish_eating_and_leave(IPC *ipc, int group_size, int table_index);
