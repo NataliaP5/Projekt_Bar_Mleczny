@@ -3,6 +3,14 @@
 #include <sys/wait.h>
 #include <signal.h>
 
+static volatile sig_atomic_t g_usr1 = 0;
+static volatile sig_atomic_t g_usr2 = 0;
+static volatile sig_atomic_t g_term = 0;
+
+static void on_usr1(int sig){ (void)sig; g_usr1 = 1; }
+static void on_usr2(int sig){ (void)sig; g_usr2 = 1; }
+static void on_term(int sig){ (void)sig; g_term = 1; }
+
 static pid_t spawn(const char *path, const char *arg1) {
     pid_t pid = fork();
     if (pid == -1) DIE_PERROR("fork");
@@ -23,7 +31,13 @@ int main(int argc, char **argv) {
     int X2 = parse_int(argv[2], 0, 100, "X2");
     int X3 = parse_int(argv[3], 0, 100, "X3");
     int X4 = parse_int(argv[4], 0, 100, "X4");
-    int clients = (argc >= 6) ? parse_int(argv[5], 0, 500, "CLIENTS") : 5;
+    int clients = (argc >= 6) ? parse_int(argv[5], 0, 500, "CLIENTS") : 12;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_usr1; sigaction(SIGUSR1, &sa, NULL);
+    sa.sa_handler = on_usr2; sigaction(SIGUSR2, &sa, NULL);
+    sa.sa_handler = on_term; sigaction(SIGTERM, &sa, NULL);
 
     IPC ipc;
     if (!ipc_create(&ipc, "ipc.key")) {
@@ -38,26 +52,57 @@ int main(int argc, char **argv) {
 
     pid_t worker = spawn("./bin/worker", NULL);
     pid_t cashier = spawn("./bin/cashier", NULL);
-
     log_line("manager", "Spawned worker pid=%d, cashier pid=%d", (int)worker, (int)cashier);
 
+    pid_t client_pids[600];
+    int spawned = 0;
+
     for (int i = 1; i <= clients; i++) {
+        if (g_term) break;
+
         char idbuf[32];
         snprintf(idbuf, sizeof(idbuf), "%d", i);
         pid_t cpid = spawn("./bin/client", idbuf);
+        client_pids[spawned++] = cpid;
         log_line("manager", "Spawned client %d pid=%d", i, (int)cpid);
-        sleep_ms(100);
+
+        sleep_ms(80);
     }
 
-    for (int i = 0; i < clients; i++) {
-        wait(NULL);
+    int finished = 0;
+    while (finished < spawned) {
+        if (g_term) {
+            log_line("manager", "FIRE (SIGTERM) received -> evacuating clients NOW.");
+            sem_lock(ipc.sem_id);
+            ipc.st->fire_alarm = 1;
+            ipc.st->closing = 1;
+            sem_unlock(ipc.sem_id);
+
+            for (int i = 0; i < spawned; i++) {
+                kill(client_pids[i], SIGTERM);
+            }
+            break;
+        }
+        pid_t w = waitpid(-1, NULL, WNOHANG);
+        if (w > 0) finished++;
+        else sleep_ms(50);
+    }
+
+    if (g_term) {
+        sleep_ms(200);
+        for (int i = 0; i < spawned; i++) {
+            kill(client_pids[i], SIGTERM);
+        }
+        for (int i = finished; i < spawned; i++) {
+            wait(NULL);
+        }
+    } else {
+        for (; finished < spawned; finished++) wait(NULL);
     }
 
     log_line("manager", "Stopping worker/cashier (SIGTERM).");
     kill(worker, SIGTERM);
     kill(cashier, SIGTERM);
-
-    sleep_ms(300);
     waitpid(worker, NULL, 0);
     waitpid(cashier, NULL, 0);
 
