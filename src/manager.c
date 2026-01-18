@@ -11,6 +11,8 @@ static void on_usr1(int sig){ (void)sig; g_usr1 = 1; }
 static void on_usr2(int sig){ (void)sig; g_usr2 = 1; }
 static void on_term(int sig){ (void)sig; g_term = 1; }
 
+static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
+
 static pid_t spawn(const char *path, const char *arg1) {
     pid_t pid = fork();
     if (pid == -1) DIE_PERROR("fork");
@@ -31,7 +33,7 @@ int main(int argc, char **argv) {
     int X2 = parse_int(argv[2], 0, 100, "X2");
     int X3 = parse_int(argv[3], 0, 100, "X3");
     int X4 = parse_int(argv[4], 0, 100, "X4");
-    int clients = (argc >= 6) ? parse_int(argv[5], 0, 500, "CLIENTS") : 12;
+    int clients = (argc >= 6) ? parse_int(argv[5], 0, 600, "CLIENTS") : 120;
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -48,8 +50,8 @@ int main(int argc, char **argv) {
     }
 
     ipc_init_tables_for_manager(&ipc, X1, X2, X3, X4);
-    log_line("manager", "Manager started pid=%d. Spawning worker+cashier.", (int)getpid());
 
+    log_line("manager", "Manager started pid=%d. Spawning worker+cashier.", (int)getpid());
     pid_t worker = spawn("./bin/worker", NULL);
     pid_t cashier = spawn("./bin/cashier", NULL);
     log_line("manager", "Spawned worker pid=%d, cashier pid=%d", (int)worker, (int)cashier);
@@ -57,20 +59,47 @@ int main(int argc, char **argv) {
     pid_t client_pids[600];
     int spawned = 0;
 
-    for (int i = 1; i <= clients; i++) {
+    for (int i = 1; i <= clients && spawned < 600; i++) {
         if (g_term) break;
 
         char idbuf[32];
         snprintf(idbuf, sizeof(idbuf), "%d", i);
         pid_t cpid = spawn("./bin/client", idbuf);
         client_pids[spawned++] = cpid;
-        log_line("manager", "Spawned client %d pid=%d", i, (int)cpid);
 
-        sleep_ms(80);
+        log_line("manager", "Spawned client %d pid=%d", i, (int)cpid);
+        sleep_ms(60);
     }
 
     int finished = 0;
     while (finished < spawned) {
+
+        if (g_usr1) {
+            g_usr1 = 0;
+            int added = add_more_x3_tables_once(&ipc);
+            log_line("manager", "SIGUSR1: added %d new 3-seat tables (once)", added);
+        }
+
+        if (g_usr2) {
+            g_usr2 = 0;
+
+            Msg m;
+            memset(&m, 0, sizeof(m));
+            m.mtype = MTYPE_WORKER;
+            m.kind = MSG_RESERVE_REQ;
+            m.pid = getpid();
+            m.value = 5;
+
+            if (msgsnd(ipc.msg_id, &m, msgsz(), 0) == -1) {
+                perror("manager msgsnd RESERVE_REQ");
+            } else {
+                Msg rep;
+                ssize_t r = msgrcv(ipc.msg_id, &rep, msgsz(), (long)getpid(), 0);
+                if (r == -1) perror("manager msgrcv RESERVE_REPLY");
+                else log_line("manager", "SIGUSR2: reserved seats=%d", rep.value);
+            }
+        }
+
         if (g_term) {
             log_line("manager", "FIRE (SIGTERM) received -> evacuating clients NOW.");
             sem_lock(ipc.sem_id);
@@ -83,6 +112,7 @@ int main(int argc, char **argv) {
             }
             break;
         }
+
         pid_t w = waitpid(-1, NULL, WNOHANG);
         if (w > 0) finished++;
         else sleep_ms(50);

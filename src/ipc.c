@@ -92,6 +92,7 @@ void ipc_init_tables_for_manager(IPC *ipc, int x1, int x2, int x3, int x4) {
     ipc->st->x1 = x1;
     ipc->st->x2 = x2;
     ipc->st->x3 = x3;
+    ipc->st->x3_base = x3;
     ipc->st->x4 = x4;
 
     int idx = 0;
@@ -201,3 +202,45 @@ void finish_eating_and_leave(IPC *ipc, int group_size, int table_index) {
     sem_unlock(ipc->sem_id);
 }
 
+int add_more_x3_tables_once(IPC *ipc) {
+    int added = 0;
+    sem_lock(ipc->sem_id);
+
+    if (!ipc->st->x3_boost_used) {
+        int can_add = ipc->st->x3_base;
+        while (can_add > 0 && ipc->st->tables_count < MAX_TABLES) {
+            ipc->st->tables[ipc->st->tables_count].capacity = 3;
+            ipc->st->tables_count++;
+            ipc->st->x3++;
+            added++;
+            can_add--;
+        }
+        ipc->st->x3_boost_used = 1;
+    }
+
+    sem_unlock(ipc->sem_id);
+    return added;
+}
+
+int reserve_seats_fixed(IPC *ipc, int seats) {
+    if (seats <= 0) return 0;
+
+    int reserved = 0;
+    sem_lock(ipc->sem_id);
+
+    for (int i = 0; i < ipc->st->tables_count && reserved < seats; i++) {
+        Table *t = &ipc->st->tables[i];
+
+        int used = t->reserved_fixed + t->occupied_seats + t->pending_seats;
+        int free = t->capacity - used;
+
+        while (free > 0 && reserved < seats) {
+            t->reserved_fixed++;
+            reserved++;
+            free--;
+        }
+    }
+
+    sem_unlock(ipc->sem_id);
+    return reserved;
+}

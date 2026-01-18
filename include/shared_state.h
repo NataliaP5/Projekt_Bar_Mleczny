@@ -13,6 +13,7 @@ typedef struct {
 
 typedef struct {
     int x1, x2, x3, x4;
+    int x3_base;
     int tables_count;
     Table tables[MAX_TABLES];
 

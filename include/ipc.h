@@ -18,6 +18,9 @@
 #define MSG_SERVE_REQ  3
 #define MSG_SERVE_REPLY 4
 
+#define MSG_RESERVE_REQ   5
+#define MSG_RESERVE_REPLY 6
+
 typedef struct {
     int shm_id;
     int sem_id;
@@ -48,3 +51,5 @@ int pick_table_and_reserve(IPC *ipc, int group_size, int *out_table);
 void activate_seating(IPC *ipc, int group_size, int table_index);
 void cancel_reservation(IPC *ipc, int group_size, int table_index);
 void finish_eating_and_leave(IPC *ipc, int group_size, int table_index);
+int add_more_x3_tables_once(IPC *ipc);
+int reserve_seats_fixed(IPC *ipc, int seats);
