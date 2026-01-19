@@ -41,6 +41,14 @@ int main(int argc, char **argv) {
     pid_t me = getpid();
     int group = (id % 3) + 1;
 
+    unsigned h = (unsigned)(now_ms() ^ (unsigned)getpid() ^ (unsigned)(id * 2654435761u));
+    int no_order = (h % 100) < 5;
+    if (no_order) {
+        log_line("client", "Client %d: no order (leaves immediately)", id);
+        ipc_close(&ipc);
+        return 0;
+    }
+
     int table = -1;
     while (!g_fire) {
         table = pick_table_and_reserve(&ipc, group, NULL);
