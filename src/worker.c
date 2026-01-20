@@ -7,6 +7,25 @@ static void on_term(int sig){ (void)sig; g_stop = 1; }
 
 static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
 
+static int do_reserve_attempt(IPC *ipc) {
+    sem_lock(ipc->sem_id);
+    int rem = ipc->st->reserve_remaining;
+    sem_unlock(ipc->sem_id);
+
+    if (rem <= 0) return 0;
+
+    int got = reserve_seats_fixed(ipc, rem);
+
+    sem_lock(ipc->sem_id);
+    if (got > ipc->st->reserve_remaining) got = ipc->st->reserve_remaining;
+    ipc->st->reserve_remaining -= got;
+    int left = ipc->st->reserve_remaining;
+    sem_unlock(ipc->sem_id);
+
+    log_line("worker", "RESERVE progress: requested_rem=%d got=%d left=%d", rem, got, left);
+    return got;
+}
+
 int main(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -63,9 +82,7 @@ int main(void) {
             }
 
             case MSG_RESERVE_REQ: {
-                int want = req.value;
-                int got = reserve_seats_fixed(&ipc, want);
-                log_line("worker", "RESERVE_REQ want=%d -> reserved=%d", want, got);
+                int got = do_reserve_attempt(&ipc);
 
                 Msg rep;
                 memset(&rep, 0, sizeof(rep));
@@ -81,16 +98,22 @@ int main(void) {
                 break;
             }
 
+            case MSG_RESERVE_TICK: {
+                (void)do_reserve_attempt(&ipc);
+                break;
+            }
+
             case MSG_DISH_RETURN_REQ: {
                 int dishes = req.value;
                 if (dishes < 0) dishes = 0;
 
                 sem_lock(ipc.sem_id);
                 ipc.st->dishes_returned_total += dishes;
+                int total = ipc.st->dishes_returned_total;
                 sem_unlock(ipc.sem_id);
 
                 log_line("worker", "DISH_RETURN from pid=%d table=%d dishes=%d (total=%d)",
-                         (int)req.pid, req.table_index, dishes, ipc.st->dishes_returned_total);
+                         (int)req.pid, req.table_index, dishes, total);
                 break;
             }
 

@@ -94,6 +94,7 @@ void ipc_init_tables_for_manager(IPC *ipc, int x1, int x2, int x3, int x4) {
     ipc->st->x3 = x3;
     ipc->st->x3_base = x3;
     ipc->st->x4 = x4;
+    ipc->st->reserve_remaining = 0;
 
     int idx = 0;
 
