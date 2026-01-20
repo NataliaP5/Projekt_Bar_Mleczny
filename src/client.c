@@ -118,6 +118,44 @@ int main(int argc, char **argv) {
     sleep_ms(400 + (id % 5) * 120);
 
     finish_eating_and_leave(&ipc, group, table);
+
+    unsigned h2 = (unsigned)(now_ms() ^ (unsigned)getpid() ^ (unsigned)(id * 1103515245u));
+    int collective = (h2 % 2);
+
+    if (collective) {
+        Msg d;
+        memset(&d, 0, sizeof(d));
+        d.mtype = MTYPE_WORKER;
+        d.kind = MSG_DISH_RETURN_REQ;
+        d.pid = me;
+        d.group_size = group;
+        d.table_index = table;
+        d.value = group;
+
+        if (msgsnd(ipc.msg_id, &d, msgsz(), 0) == -1) {
+            perror("client msgsnd DISH_RETURN (collective)");
+        } else {
+            log_line("client", "Client %d returned dishes collectively=%d", id, group);
+        }
+    } else {
+        for (int i = 0; i < group; i++) {
+             Msg d;
+             memset(&d, 0, sizeof(d));
+             d.mtype = MTYPE_WORKER;
+             d.kind = MSG_DISH_RETURN_REQ;
+             d.pid = me;
+             d.group_size = group;
+             d.table_index = table;
+             d.value = 1;
+
+             if (msgsnd(ipc.msg_id, &d, msgsz(), 0) == -1) {
+                 perror("client msgsnd DISH_RETURN (single)");
+                 break;
+             }
+        }
+        log_line("client", "Client %d returned dishes individually=%d", id, group);
+    }
+
     log_line("client", "Client %d left table=%d", id, table);
 
     ipc_close(&ipc);

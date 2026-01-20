@@ -20,4 +20,5 @@ typedef struct {
     int fire_alarm;
     int closing;
     int x3_boost_used;
+    int dishes_returned_total;
 } SharedState;

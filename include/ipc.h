@@ -20,6 +20,7 @@
 
 #define MSG_RESERVE_REQ   5
 #define MSG_RESERVE_REPLY 6
+#define MSG_DISH_RETURN_REQ 7
 
 typedef struct {
     int shm_id;

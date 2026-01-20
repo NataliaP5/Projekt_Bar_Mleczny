@@ -81,6 +81,19 @@ int main(void) {
                 break;
             }
 
+            case MSG_DISH_RETURN_REQ: {
+                int dishes = req.value;
+                if (dishes < 0) dishes = 0;
+
+                sem_lock(ipc.sem_id);
+                ipc.st->dishes_returned_total += dishes;
+                sem_unlock(ipc.sem_id);
+
+                log_line("worker", "DISH_RETURN from pid=%d table=%d dishes=%d (total=%d)",
+                         (int)req.pid, req.table_index, dishes, ipc.st->dishes_returned_total);
+                break;
+            }
+
             default:
                 log_line("worker", "Ignoring msg kind=%d", req.kind);
                 break;
