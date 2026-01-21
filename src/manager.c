@@ -3,6 +3,15 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <stdarg.h>
+
+#define C_RESET "\033[0m"
+#define C_RED   "\033[31m"
+#define C_GRN   "\033[32m"
+#define C_YEL   "\033[33m"
+#define C_BLU   "\033[34m"
+#define C_MAG   "\033[35m"
+#define C_CYN   "\033[36m"
 
 static volatile sig_atomic_t g_usr1 = 0;
 static volatile sig_atomic_t g_usr2 = 0;
@@ -90,6 +99,17 @@ static void snapshot_status(IPC *ipc,
     *out_fire = fire;
 }
 
+static void term_printf(const char *color, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stdout, "%s", color);
+    vfprintf(stdout, fmt, ap);
+    fprintf(stdout, "%s", C_RESET);
+    fflush(stdout);
+    va_end(ap);
+}
+
+
 int main(int argc, char **argv) {
     if (argc < 5) {
         fprintf(stderr, "Usage: %s X1 X2 X3 X4 [CLIENTS] [RESERVESEATS] [ARR_MIN_MS] [ARR_MAX_MS]\n", argv[0]);
@@ -160,6 +180,7 @@ int main(int argc, char **argv) {
                 log_line("manager", "SIGUSR1: added %d new 3-seat tables (once)", added);
             else
                 log_line("manager", "SIGUSR1: ignored (boost already used)");
+            term_printf(C_MAG, "[SIGUSR1] boost X3 tables\n");
         }
 
         if (g_usr2) {
@@ -181,6 +202,7 @@ int main(int argc, char **argv) {
             sem_unlock(ipc.sem_id);
 
             log_line("manager", "SIGUSR2: requested %d seats; reserve_remaining now=%d", want, rem);
+            term_printf(C_BLU, "[SIGUSR2] reservation requested\n");
 
             Msg m;
             memset(&m, 0, sizeof(m));
@@ -215,6 +237,7 @@ int main(int argc, char **argv) {
             ipc.st->closing = 1;
             sem_unlock(ipc.sem_id);
             log_line("manager", "NORMAL CLOSE (Ctrl+C): stop spawning new clients, wait for remaining to finish.");
+            term_printf(C_YEL, "[CLOSE] normal close: stop spawning new clients\n");
             break;
         }
 
@@ -235,6 +258,10 @@ int main(int argc, char **argv) {
             log_line("manager",
                      "STATUS tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d",
                      tables, total, occ, pend, res, res_rem, dishes, closing, fire);
+
+            term_printf(C_CYN,
+                "[STATUS] tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d\n",
+                tables, total, occ, pend, res, res_rem, dishes, closing, fire);
 
             last_status = now;
         }
@@ -264,6 +291,7 @@ int main(int argc, char **argv) {
 
     if (g_fire) {
         log_line("manager", "FIRE (SIGTERM) received -> evacuating clients NOW.");
+        term_printf(C_RED, "[FIRE] evacuating clients NOW!\n");
         sem_lock(ipc.sem_id);
         ipc.st->fire_alarm = 1;
         ipc.st->closing = 1;
