@@ -30,7 +30,7 @@ int main(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_term;
-    sigaction(SIGTERM, &sa, NULL);
+    if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
 
     IPC ipc;
     if (!ipc_open(&ipc, "ipc.key")) {

@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_term;
-    sigaction(SIGTERM, &sa, NULL);
+    if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
 
     int id = (argc >= 2) ? parse_int(argv[1], 0, 1000000, "client_id") : 0;
 

@@ -69,10 +69,16 @@ int main(int argc, char **argv) {
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = on_usr1;  sigaction(SIGUSR1, &sa, NULL);
-    sa.sa_handler = on_usr2;  sigaction(SIGUSR2, &sa, NULL);
-    sa.sa_handler = on_fire;  sigaction(SIGTERM, &sa, NULL);
-    sa.sa_handler = on_close; sigaction(SIGINT,  &sa, NULL);
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sa.sa_handler = on_usr1;
+    if (sigaction(SIGUSR1, &sa, NULL) == -1) DIE_PERROR("sigaction SIGUSR1");
+    sa.sa_handler = on_usr2;
+    if (sigaction(SIGUSR2, &sa, NULL) == -1) DIE_PERROR("sigaction SIGUSR2");
+    sa.sa_handler = on_fire;
+    if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
+    sa.sa_handler = on_close;
+    if (sigaction(SIGINT,  &sa, NULL) == -1) DIE_PERROR("sigaction SIGINT");
 
     IPC ipc;
     if (!ipc_create(&ipc, "ipc.key")) {
@@ -208,7 +214,9 @@ int main(int argc, char **argv) {
         ipc.st->closing = 1;
         sem_unlock(ipc.sem_id);
 
-        for (int k = 0; k < spawned; k++) kill(client_pids[k], SIGTERM);
+        for (int k = 0; k < spawned; k++) {
+            if (kill(client_pids[k], SIGTERM) == -1) perror("kill client");
+        }
     }
 
     while (finished < spawned) {
@@ -217,8 +225,8 @@ int main(int argc, char **argv) {
     }
 
     log_line("manager", "Stopping worker/cashier (shutdown).");
-    kill(worker, SIGTERM);
-    kill(cashier, SIGTERM);
+    if (kill(worker, SIGTERM) == -1) perror("kill worker");
+    if (kill(cashier, SIGTERM) == -1) perror("kill cashier");
     waitpid(worker, NULL, 0);
     waitpid(cashier, NULL, 0);
 

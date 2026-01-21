@@ -7,7 +7,7 @@ union semun { int val; struct semid_ds *buf; unsigned short *array; };
 static key_t make_key(const char *keyfile, int proj) {
     int fd = open(keyfile, O_CREAT | O_RDWR, 0600);
     if (fd == -1) DIE_PERROR("open keyfile");
-    close(fd);
+    if (close(fd) == -1) perror("close keyfile");
 
     key_t k = ftok(keyfile, proj);
     if (k == -1) DIE_PERROR("ftok");
