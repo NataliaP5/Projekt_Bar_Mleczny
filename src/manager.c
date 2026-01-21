@@ -57,6 +57,17 @@ static void send_reserve_tick(IPC *ipc) {
     }
 }
 
+static void term_printf(const char *color, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stdout, "%s", color);
+    vfprintf(stdout, fmt, ap);
+    fprintf(stdout, "%s", C_RESET);
+    fflush(stdout);
+    va_end(ap);
+}
+
+
 static void snapshot_status(IPC *ipc,
                             int *out_tables,
                             int *out_total_seats,
@@ -99,16 +110,18 @@ static void snapshot_status(IPC *ipc,
     *out_fire = fire;
 }
 
-static void term_printf(const char *color, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    fprintf(stdout, "%s", color);
-    vfprintf(stdout, fmt, ap);
-    fprintf(stdout, "%s", C_RESET);
-    fflush(stdout);
-    va_end(ap);
-}
+static void print_final_status(IPC *ipc, const char *tag) {
+    int tables, total, occ, pend, res, res_rem, dishes, closing, fire;
+    snapshot_status(ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &closing, &fire);
 
+    log_line("manager",
+        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d",
+        tag, tables, total, occ, pend, res, res_rem, dishes, closing, fire);
+
+    term_printf(C_YEL,
+        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d\n",
+        tag, tables, total, occ, pend, res, res_rem, dishes, closing, fire);
+}
 
 int main(int argc, char **argv) {
     if (argc < 5) {
@@ -236,6 +249,7 @@ int main(int argc, char **argv) {
             sem_lock(ipc.sem_id);
             ipc.st->closing = 1;
             sem_unlock(ipc.sem_id);
+            print_final_status(&ipc, "FINAL_STATUS (NORMAL_CLOSE)");
             log_line("manager", "NORMAL CLOSE (Ctrl+C): stop spawning new clients, wait for remaining to finish.");
             term_printf(C_YEL, "[CLOSE] normal close: stop spawning new clients\n");
             break;
@@ -296,6 +310,7 @@ int main(int argc, char **argv) {
         ipc.st->fire_alarm = 1;
         ipc.st->closing = 1;
         sem_unlock(ipc.sem_id);
+        print_final_status(&ipc, "FINAL_STATUS (FIRE)");
 
         for (int k = 0; k < spawned; k++) {
              if (kill(client_pids[k], SIGTERM) == -1) {
