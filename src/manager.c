@@ -201,7 +201,7 @@ int main(int argc, char **argv) {
             g_usr2 = 0;
 
             int want = reserve_target;
-            if (want < 0) {
+            if (want <= 0) {
                 char buf[64];
                 fprintf(stderr, "\n[SIGUSR2] Podaj liczbe miejsc do rezerwacji: ");
                 fflush(stderr);
