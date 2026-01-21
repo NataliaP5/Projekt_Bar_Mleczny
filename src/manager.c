@@ -48,6 +48,48 @@ static void send_reserve_tick(IPC *ipc) {
     }
 }
 
+static void snapshot_status(IPC *ipc,
+                            int *out_tables,
+                            int *out_total_seats,
+                            int *out_occ,
+                            int *out_pend,
+                            int *out_res,
+                            int *out_res_rem,
+                            int *out_dishes,
+                            int *out_closing,
+                            int *out_fire)
+{
+    int tables = 0, total = 0, occ = 0, pend = 0, res = 0;
+
+    sem_lock(ipc->sem_id);
+
+    tables = ipc->st->tables_count;
+    for (int i = 0; i < ipc->st->tables_count; i++) {
+        Table *t = &ipc->st->tables[i];
+        total += t->capacity;
+        occ   += t->occupied_seats;
+        pend  += t->pending_seats;
+        res   += t->reserved_fixed;
+    }
+
+    int res_rem = ipc->st->reserve_remaining;
+    int dishes  = ipc->st->dishes_returned_total;
+    int closing = ipc->st->closing;
+    int fire    = ipc->st->fire_alarm;
+
+    sem_unlock(ipc->sem_id);
+
+    *out_tables = tables;
+    *out_total_seats = total;
+    *out_occ = occ;
+    *out_pend = pend;
+    *out_res = res;
+    *out_res_rem = res_rem;
+    *out_dishes = dishes;
+    *out_closing = closing;
+    *out_fire = fire;
+}
+
 int main(int argc, char **argv) {
     if (argc < 5) {
         fprintf(stderr, "Usage: %s X1 X2 X3 X4 [CLIENTS] [RESERVESEATS] [ARR_MIN_MS] [ARR_MAX_MS]\n", argv[0]);
@@ -108,6 +150,7 @@ int main(int argc, char **argv) {
     int i = 1;
     long long next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max, i);
     long long last_tick = now_ms();
+    long long last_status = now_ms();
 
     while (!g_fire) {
         if (g_usr1) {
@@ -184,6 +227,18 @@ int main(int argc, char **argv) {
         }
 
         long long now = now_ms();
+
+        if (now - last_status >= 1000) {
+            int tables, total, occ, pend, res, res_rem, dishes, closing, fire;
+            snapshot_status(&ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &closing, &fire);
+
+            log_line("manager",
+                     "STATUS tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d",
+                     tables, total, occ, pend, res, res_rem, dishes, closing, fire);
+
+            last_status = now;
+        }
+
         if (now >= next_spawn_at) {
             if (spawned < (int)(sizeof(client_pids)/sizeof(client_pids[0]))) {
                 char idbuf[32];
@@ -215,7 +270,9 @@ int main(int argc, char **argv) {
         sem_unlock(ipc.sem_id);
 
         for (int k = 0; k < spawned; k++) {
-            if (kill(client_pids[k], SIGTERM) == -1) perror("kill client");
+             if (kill(client_pids[k], SIGTERM) == -1) {
+                 if (errno != ESRCH) perror("kill client");
+             }
         }
     }
 
