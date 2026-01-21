@@ -208,20 +208,27 @@ int add_more_x3_tables_once(IPC *ipc) {
     sem_lock(ipc->sem_id);
 
     if (!ipc->st->x3_boost_used) {
-        int can_add = ipc->st->x3_base;
+        int target_add = ipc->st->x3_base;
+        int can_add = target_add;
+
         while (can_add > 0 && ipc->st->tables_count < MAX_TABLES) {
-            ipc->st->tables[ipc->st->tables_count].capacity = 3;
+            Table *t = &ipc->st->tables[ipc->st->tables_count];
+            memset(t, 0, sizeof(*t));
+            t->capacity = 3;
+
             ipc->st->tables_count++;
-            ipc->st->x3++;
             added++;
             can_add--;
         }
+
+        ipc->st->x3 += added;
         ipc->st->x3_boost_used = 1;
     }
 
     sem_unlock(ipc->sem_id);
     return added;
 }
+
 
 int reserve_seats_fixed(IPC *ipc, int seats) {
     if (seats <= 0) return 0;

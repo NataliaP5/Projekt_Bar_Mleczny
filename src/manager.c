@@ -102,7 +102,10 @@ int main(int argc, char **argv) {
         if (g_usr1) {
             g_usr1 = 0;
             int added = add_more_x3_tables_once(&ipc);
-            log_line("manager", "SIGUSR1: added %d new 3-seat tables (once)", added);
+            if (added > 0)
+                log_line("manager", "SIGUSR1: added %d new 3-seat tables (once)", added);
+            else
+                log_line("manager", "SIGUSR1: ignored (boost already used)");
         }
 
         if (g_usr2) {
