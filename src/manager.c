@@ -6,11 +6,13 @@
 
 static volatile sig_atomic_t g_usr1 = 0;
 static volatile sig_atomic_t g_usr2 = 0;
-static volatile sig_atomic_t g_term = 0;
+static volatile sig_atomic_t g_fire = 0;
+static volatile sig_atomic_t g_close = 0;
 
 static void on_usr1(int sig){ (void)sig; g_usr1 = 1; }
 static void on_usr2(int sig){ (void)sig; g_usr2 = 1; }
-static void on_term(int sig){ (void)sig; g_term = 1; }
+static void on_fire(int sig){ (void)sig; g_fire = 1; }
+static void on_close(int sig){ (void)sig; g_close = 1; }
 
 static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
 
@@ -49,9 +51,9 @@ static void send_reserve_tick(IPC *ipc) {
 int main(int argc, char **argv) {
     if (argc < 5) {
         fprintf(stderr, "Usage: %s X1 X2 X3 X4 [CLIENTS] [RESERVESEATS] [ARR_MIN_MS] [ARR_MAX_MS]\n", argv[0]);
-        fprintf(stderr, "  CLIENTS=0 -> tryb ciagly (do SIGTERM)\n");
-        fprintf(stderr, "  RESERVESEATS opcjonalnie; gdy brak, SIGUSR2 pyta w terminalu\n");
-        fprintf(stderr, "  ARR_MIN_MS/ARR_MAX_MS opcjonalnie (domyslnie 60..60)\n");
+        fprintf(stderr, "  CLIENTS=0 -> tryb ciagly (do zamkniecia)\n");
+        fprintf(stderr, "  Ctrl+C (SIGINT) -> normalne zamkniecie (bez ewakuacji)\n");
+        fprintf(stderr, "  SIGTERM -> POZAR (ewakuacja natychmiast)\n");
         return 1;
     }
 
@@ -67,9 +69,10 @@ int main(int argc, char **argv) {
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = on_usr1; sigaction(SIGUSR1, &sa, NULL);
-    sa.sa_handler = on_usr2; sigaction(SIGUSR2, &sa, NULL);
-    sa.sa_handler = on_term; sigaction(SIGTERM, &sa, NULL);
+    sa.sa_handler = on_usr1;  sigaction(SIGUSR1, &sa, NULL);
+    sa.sa_handler = on_usr2;  sigaction(SIGUSR2, &sa, NULL);
+    sa.sa_handler = on_fire;  sigaction(SIGTERM, &sa, NULL);
+    sa.sa_handler = on_close; sigaction(SIGINT,  &sa, NULL);
 
     IPC ipc;
     if (!ipc_create(&ipc, "ipc.key")) {
@@ -83,6 +86,8 @@ int main(int argc, char **argv) {
 
     sem_lock(ipc.sem_id);
     ipc.st->reserve_remaining = 0;
+    ipc.st->fire_alarm = 0;
+    ipc.st->closing = 0;
     sem_unlock(ipc.sem_id);
 
     log_line("manager", "Manager started pid=%d. Spawning worker+cashier.", (int)getpid());
@@ -98,7 +103,7 @@ int main(int argc, char **argv) {
     long long next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max, i);
     long long last_tick = now_ms();
 
-    while (!g_term) {
+    while (!g_fire) {
         if (g_usr1) {
             g_usr1 = 0;
             int added = add_more_x3_tables_once(&ipc);
@@ -156,7 +161,21 @@ int main(int argc, char **argv) {
             else break;
         }
 
-        if (clients > 0 && i > clients) break;
+        if (g_close) {
+            sem_lock(ipc.sem_id);
+            ipc.st->closing = 1;
+            sem_unlock(ipc.sem_id);
+            log_line("manager", "NORMAL CLOSE (Ctrl+C): stop spawning new clients, wait for remaining to finish.");
+            break;
+        }
+
+        if (clients > 0 && i > clients) {
+            sem_lock(ipc.sem_id);
+            ipc.st->closing = 1;
+            sem_unlock(ipc.sem_id);
+            log_line("manager", "NORMAL CLOSE: client limit reached, waiting for remaining to finish.");
+            break;
+        }
 
         long long now = now_ms();
         if (now >= next_spawn_at) {
@@ -175,7 +194,6 @@ int main(int argc, char **argv) {
             sem_lock(ipc.sem_id);
             int rem = ipc.st->reserve_remaining;
             sem_unlock(ipc.sem_id);
-
             if (rem > 0) send_reserve_tick(&ipc);
             last_tick = now;
         }
@@ -183,7 +201,7 @@ int main(int argc, char **argv) {
         sleep_ms(20);
     }
 
-    if (g_term) {
+    if (g_fire) {
         log_line("manager", "FIRE (SIGTERM) received -> evacuating clients NOW.");
         sem_lock(ipc.sem_id);
         ipc.st->fire_alarm = 1;
@@ -198,7 +216,7 @@ int main(int argc, char **argv) {
         if (w > 0) finished++;
     }
 
-    log_line("manager", "Stopping worker/cashier (SIGTERM).");
+    log_line("manager", "Stopping worker/cashier (shutdown).");
     kill(worker, SIGTERM);
     kill(cashier, SIGTERM);
     waitpid(worker, NULL, 0);
