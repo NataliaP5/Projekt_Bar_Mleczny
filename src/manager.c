@@ -1,4 +1,5 @@
 #include "common.h"
+#include <errno.h>
 #include "ipc.h"
 #include <sys/wait.h>
 #include <signal.h>
@@ -325,8 +326,12 @@ int main(int argc, char **argv) {
     }
 
     log_line("manager", "Stopping worker/cashier (shutdown).");
-    if (kill(worker, SIGTERM) == -1) perror("kill worker");
-    if (kill(cashier, SIGTERM) == -1) perror("kill cashier");
+    if (kill(worker, SIGTERM) == -1) {
+        if (errno != ESRCH) perror("kill worker");
+    }
+    if (kill(cashier, SIGTERM) == -1) {
+        if (errno != ESRCH) perror("kill cashier");
+    }
     waitpid(worker, NULL, 0);
     waitpid(cashier, NULL, 0);
 
