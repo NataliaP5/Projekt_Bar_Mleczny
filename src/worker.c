@@ -1,6 +1,9 @@
 #include "common.h"
 #include "ipc.h"
 #include <signal.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_term(int sig){ (void)sig; g_stop = 1; }
@@ -29,6 +32,8 @@ static int do_reserve_attempt(IPC *ipc) {
 int main(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
     sa.sa_handler = on_term;
     if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
 
@@ -44,7 +49,10 @@ int main(void) {
         Msg req;
         ssize_t r = msgrcv(ipc.msg_id, &req, msgsz(), MTYPE_WORKER, 0);
         if (r == -1) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                if (g_stop) break;
+                continue;
+            }
             perror("worker msgrcv");
             break;
         }
@@ -52,9 +60,11 @@ int main(void) {
         switch (req.kind) {
             case MSG_SERVE_REQ: {
                 int ok = 1;
+
                 sem_lock(ipc.sem_id);
-                if (req.table_index < 0 || req.table_index >= ipc.st->tables_count) ok = 0;
-                else {
+                if (req.table_index < 0 || req.table_index >= ipc.st->tables_count) {
+                    ok = 0;
+                } else {
                     Table *t = &ipc.st->tables[req.table_index];
                     if (req.group_size < 1 || req.group_size > 3) ok = 0;
                     else if (t->pending_seats < req.group_size) ok = 0;

@@ -1,14 +1,15 @@
 #include "common.h"
 #include "ipc.h"
 #include <signal.h>
+#include <errno.h>
 
-static volatile sig_atomic_t g_fire = 0;
-static void on_term(int sig){ (void)sig; g_fire = 1; }
+static volatile sig_atomic_t g_stop = 0;
+static void on_term(int sig){ (void)sig; g_stop = 1; }
 
 static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
 
 static int wait_reply(IPC *ipc, long mytype, int expected_kind, Msg *out) {
-    while (!g_fire) {
+    while (!g_stop) {
         Msg rep;
         ssize_t r = msgrcv(ipc->msg_id, &rep, msgsz(), mytype, 0);
         if (r == -1) {
@@ -27,16 +28,26 @@ static int wait_reply(IPC *ipc, long mytype, int expected_kind, Msg *out) {
 static void eat_interruptible(int total_ms) {
     const int step = 80;
     int left = total_ms;
-    while (left > 0 && !g_fire) {
+    while (left > 0 && !g_stop) {
         int s = (left > step) ? step : left;
         sleep_ms(s);
         left -= s;
     }
 }
 
+static int is_fire_now(IPC *ipc) {
+    int fire = 0;
+    sem_lock(ipc->sem_id);
+    fire = ipc->st->fire_alarm;
+    sem_unlock(ipc->sem_id);
+    return fire;
+}
+
 int main(int argc, char **argv) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
     sa.sa_handler = on_term;
     if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
 
@@ -51,7 +62,6 @@ int main(int argc, char **argv) {
     pid_t me = getpid();
     int group = (id % 3) + 1;
 
-    int evacuated = 0;
     int table = -1;
     int seated = 0;
 
@@ -63,15 +73,16 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    while (!g_fire) {
+    while (!g_stop) {
         table = pick_table_and_reserve(&ipc, group, NULL);
         if (table != -1) break;
         sleep_ms(120);
     }
 
-    if (g_fire) {
-        evacuated = 1;
-        log_line("client", "Client %d evacuated before reserving seat", id);
+    if (g_stop) {
+        int fire = is_fire_now(&ipc);
+        if (fire) log_line("client", "Client %d evacuated before reserving seat", id);
+        else      log_line("client", "Client %d force-closed before reserving seat", id);
         ipc_close(&ipc);
         return 0;
     }
@@ -95,14 +106,13 @@ int main(int argc, char **argv) {
 
     Msg payrep;
     if (!wait_reply(&ipc, (long)me, MSG_PAY_REPLY, &payrep) || !payrep.value) {
-        if (g_fire) evacuated = 1;
-        log_line("client", "Client %d PAY failed/evacuated -> cancel pending", id);
+        int fire = is_fire_now(&ipc);
+        if (fire) log_line("client", "Client %d PAY interrupted by FIRE -> cancel pending", id);
+        else      log_line("client", "Client %d PAY interrupted by FORCE_CLOSE -> cancel pending", id);
         cancel_reservation(&ipc, group, table);
         ipc_close(&ipc);
         return 0;
     }
-
-    log_line("client", "Client %d PAY ok", id);
 
     Msg srv;
     memset(&srv, 0, sizeof(srv));
@@ -121,14 +131,13 @@ int main(int argc, char **argv) {
 
     Msg srvrep;
     if (!wait_reply(&ipc, (long)me, MSG_SERVE_REPLY, &srvrep) || !srvrep.value) {
-        if (g_fire) evacuated = 1;
-        log_line("client", "Client %d SERVE failed/evacuated -> cancel pending", id);
+        int fire = is_fire_now(&ipc);
+        if (fire) log_line("client", "Client %d SERVE interrupted by FIRE -> cancel pending", id);
+        else      log_line("client", "Client %d SERVE interrupted by FORCE_CLOSE -> cancel pending", id);
         cancel_reservation(&ipc, group, table);
         ipc_close(&ipc);
         return 0;
     }
-
-    log_line("client", "Client %d SERVE ok -> seating", id);
 
     activate_seating(&ipc, group, table);
     seated = 1;
@@ -136,10 +145,8 @@ int main(int argc, char **argv) {
     int eat_ms = 400 + (id % 5) * 120;
     eat_interruptible(eat_ms);
 
-    if (g_fire) {
-        evacuated = 1;
-        log_line("client", "Client %d evacuated during meal", id);
-    }
+    int fire = 0;
+    if (g_stop) fire = is_fire_now(&ipc);
 
     if (seated) {
         finish_eating_and_leave(&ipc, group, table);
@@ -147,7 +154,9 @@ int main(int argc, char **argv) {
         cancel_reservation(&ipc, group, table);
     }
 
-    if (!evacuated) {
+    if (fire) {
+        log_line("client", "Client %d left dishes on table (FIRE evacuation)", id);
+    } else {
         unsigned h2 = (unsigned)(now_ms() ^ (unsigned)getpid() ^ (unsigned)(id * 1103515245u));
         int collective = (h2 % 2);
 
@@ -163,11 +172,9 @@ int main(int argc, char **argv) {
 
             if (msgsnd(ipc.msg_id, &d, msgsz(), 0) == -1) {
                 perror("client msgsnd DISH_RETURN (collective)");
-            } else {
-                log_line("client", "Client %d returned dishes collectively=%d", id, group);
             }
         } else {
-            for (int i = 0; i < group; i++) {
+            for (int j = 0; j < group; j++) {
                 Msg d;
                 memset(&d, 0, sizeof(d));
                 d.mtype = MTYPE_WORKER;
@@ -182,14 +189,12 @@ int main(int argc, char **argv) {
                     break;
                 }
             }
-            log_line("client", "Client %d returned dishes individually=%d", id, group);
         }
-    } else {
-        log_line("client", "Client %d left dishes on table (evacuation)", id);
+        if (g_stop) log_line("client", "Client %d force-closed -> returned dishes and left", id);
+        else        log_line("client", "Client %d finished -> returned dishes and left", id);
     }
 
     log_line("client", "Client %d left table=%d", id, table);
-
     ipc_close(&ipc);
     return 0;
 }

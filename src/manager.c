@@ -1,22 +1,22 @@
 #include "common.h"
-#include <errno.h>
 #include "ipc.h"
-#include <sys/wait.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <sys/wait.h>
+#include <time.h>
 
 #define C_RESET "\033[0m"
 #define C_RED   "\033[31m"
-#define C_GRN   "\033[32m"
 #define C_YEL   "\033[33m"
 #define C_BLU   "\033[34m"
 #define C_MAG   "\033[35m"
 #define C_CYN   "\033[36m"
 
-static volatile sig_atomic_t g_usr1 = 0;
-static volatile sig_atomic_t g_usr2 = 0;
-static volatile sig_atomic_t g_fire = 0;
+static volatile sig_atomic_t g_usr1  = 0;
+static volatile sig_atomic_t g_usr2  = 0;
+static volatile sig_atomic_t g_fire  = 0;
 static volatile sig_atomic_t g_close = 0;
 
 static void on_usr1(int sig){ (void)sig; g_usr1 = 1; }
@@ -37,25 +37,12 @@ static pid_t spawn(const char *path, const char *arg1) {
     return pid;
 }
 
-static int next_arrival_ms(int min_ms, int max_ms, int seq) {
+static int next_arrival_ms(int min_ms, int max_ms) {
     if (min_ms < 0) min_ms = 0;
     if (max_ms < min_ms) max_ms = min_ms;
-    unsigned h = (unsigned)(now_ms() ^ (unsigned)getpid() ^ (unsigned)(seq * 2654435761u));
     int span = (max_ms - min_ms) + 1;
     if (span <= 0) return min_ms;
-    return min_ms + (int)(h % (unsigned)span);
-}
-
-static void send_reserve_tick(IPC *ipc) {
-    Msg t;
-    memset(&t, 0, sizeof(t));
-    t.mtype = MTYPE_WORKER;
-    t.kind  = MSG_RESERVE_TICK;
-    t.pid   = getpid();
-    t.value = 0;
-    if (msgsnd(ipc->msg_id, &t, msgsz(), IPC_NOWAIT) == -1) {
-        if (errno != EAGAIN) perror("manager msgsnd RESERVE_TICK");
-    }
+    return min_ms + (rand() % span);
 }
 
 static void term_printf(const char *color, const char *fmt, ...) {
@@ -67,7 +54,6 @@ static void term_printf(const char *color, const char *fmt, ...) {
     fflush(stdout);
     va_end(ap);
 }
-
 
 static void snapshot_status(IPC *ipc,
                             int *out_tables,
@@ -124,12 +110,66 @@ static void print_final_status(IPC *ipc, const char *tag) {
         tag, tables, total, occ, pend, res, res_rem, dishes, closing, fire);
 }
 
+static void reap_nonblocking(void) {
+    for (;;) {
+        pid_t w = waitpid(-1, NULL, WNOHANG);
+        if (w > 0) continue;
+        if (w == 0) break;
+        if (w == -1 && errno == EINTR) continue;
+        if (w == -1 && errno == ECHILD) break;
+        if (w == -1) { perror("waitpid WNOHANG"); break; }
+    }
+}
+
+static void stop_pid(pid_t pid, const char *name, int grace_ms) {
+    if (pid <= 0) return;
+
+    if (kill(pid, SIGTERM) == -1) {
+        if (errno != ESRCH) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "kill SIGTERM (%s)", name);
+            perror(buf);
+        }
+        return;
+    }
+
+    long long deadline = (long long)now_ms() + (long long)grace_ms;
+    while ((long long)now_ms() < deadline) {
+        pid_t w = waitpid(pid, NULL, WNOHANG);
+        if (w == pid) return;
+        if (w == -1 && errno == ECHILD) return;
+        if (w == -1 && errno == EINTR) continue;
+        sleep_ms(50);
+    }
+
+    if (kill(pid, SIGKILL) == -1) {
+        if (errno != ESRCH) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "kill SIGKILL (%s)", name);
+            perror(buf);
+        }
+    }
+    (void)waitpid(pid, NULL, 0);
+}
+
+static void send_reserve_tick(IPC *ipc) {
+    Msg t;
+    memset(&t, 0, sizeof(t));
+    t.mtype = MTYPE_WORKER;
+    t.kind  = MSG_RESERVE_TICK;
+    t.pid   = getpid();
+    t.value = 0;
+    if (msgsnd(ipc->msg_id, &t, msgsz(), IPC_NOWAIT) == -1) {
+        if (errno != EAGAIN) perror("manager msgsnd RESERVE_TICK");
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc < 5) {
-        fprintf(stderr, "Usage: %s X1 X2 X3 X4 [CLIENTS] [RESERVESEATS] [ARR_MIN_MS] [ARR_MAX_MS]\n", argv[0]);
-        fprintf(stderr, "  CLIENTS=0 -> tryb ciagly (do zamkniecia)\n");
-        fprintf(stderr, "  Ctrl+C (SIGINT) -> normalne zamkniecie (bez ewakuacji)\n");
-        fprintf(stderr, "  SIGTERM -> POZAR (ewakuacja natychmiast)\n");
+        fprintf(stderr, "Usage: %s X1 X2 X3 X4 [CLIENTS] [RESERVESEATS] [ARR_MIN_MS] [ARR_MAX_MS] [SEED]\n", argv[0]);
+        fprintf(stderr, "  CLIENTS=0 -> tryb ciagly\n");
+        fprintf(stderr, "  Ctrl+C (SIGINT) -> normal close (drain 20s, potem force close)\n");
+        fprintf(stderr, "  SIGTERM -> POZAR (fire_alarm=1, ewakuacja natychmiast)\n");
         return 1;
     }
 
@@ -141,7 +181,8 @@ int main(int argc, char **argv) {
     int clients = (argc >= 6) ? parse_int(argv[5], 0, 1000000, "CLIENTS") : 120;
     int reserve_target = (argc >= 7) ? parse_int(argv[6], 0, 2000, "RESERVESEATS") : -1;
     int arr_min = (argc >= 8) ? parse_int(argv[7], 0, 60000, "ARR_MIN_MS") : 60;
-    int arr_max = (argc >= 9) ? parse_int(argv[8], 0, 60000, "ARR_MAX_MS") : 60;
+    int arr_max = (argc >= 9) ? parse_int(argv[8], 0, 60000, "ARR_MAX_MS") : 200;
+    int seed_arg = (argc >= 10) ? parse_int(argv[9], 0, 2147483647, "SEED") : -1;
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -155,6 +196,11 @@ int main(int argc, char **argv) {
     if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
     sa.sa_handler = on_close;
     if (sigaction(SIGINT,  &sa, NULL) == -1) DIE_PERROR("sigaction SIGINT");
+
+    unsigned int seed;
+    if (seed_arg >= 0) seed = (unsigned int)seed_arg;
+    else seed = (unsigned int)time(NULL) ^ (unsigned int)getpid();
+    srand(seed);
 
     IPC ipc;
     if (!ipc_create(&ipc, "ipc.key")) {
@@ -172,28 +218,31 @@ int main(int argc, char **argv) {
     ipc.st->closing = 0;
     sem_unlock(ipc.sem_id);
 
+    log_line("manager", "RNG seed=%u", seed);
     log_line("manager", "Manager started pid=%d. Spawning worker+cashier.", (int)getpid());
+
     pid_t worker = spawn("./bin/worker", NULL);
     pid_t cashier = spawn("./bin/cashier", NULL);
-    log_line("manager", "Spawned worker pid=%d, cashier pid=%d", (int)worker, (int)cashier);
 
     pid_t client_pids[6000];
     int spawned = 0;
-    int finished = 0;
 
     int i = 1;
-    long long next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max, i);
+    int stop_spawning = 0;
+    int close_started = 0;
+
+    long long next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
     long long last_tick = now_ms();
     long long last_status = now_ms();
+
+    long long drain_deadline = -1;
 
     while (!g_fire) {
         if (g_usr1) {
             g_usr1 = 0;
             int added = add_more_x3_tables_once(&ipc);
-            if (added > 0)
-                log_line("manager", "SIGUSR1: added %d new 3-seat tables (once)", added);
-            else
-                log_line("manager", "SIGUSR1: ignored (boost already used)");
+            if (added > 0) log_line("manager", "SIGUSR1: added %d new 3-seat tables (once)", added);
+            else           log_line("manager", "SIGUSR1: ignored (boost already used)");
             term_printf(C_MAG, "[SIGUSR1] boost X3 tables\n");
         }
 
@@ -231,37 +280,36 @@ int main(int argc, char **argv) {
                 Msg rep;
                 ssize_t r = msgrcv(ipc.msg_id, &rep, msgsz(), (long)getpid(), 0);
                 if (r == -1) perror("manager msgrcv RESERVE_REPLY");
-                else {
-                    sem_lock(ipc.sem_id);
-                    int left = ipc.st->reserve_remaining;
-                    sem_unlock(ipc.sem_id);
-                    log_line("manager", "SIGUSR2: reserved immediately=%d, left_to_reserve=%d", rep.value, left);
-                }
             }
         }
 
-        while (1) {
-            pid_t w = waitpid(-1, NULL, WNOHANG);
-            if (w > 0) finished++;
-            else break;
-        }
+        reap_nonblocking();
 
-        if (g_close) {
+        if (g_close && !close_started) {
+            g_close = 0;
+            close_started = 1;
+            stop_spawning = 1;
+
             sem_lock(ipc.sem_id);
             ipc.st->closing = 1;
             sem_unlock(ipc.sem_id);
+
+            drain_deadline = now_ms() + 20000;
             print_final_status(&ipc, "FINAL_STATUS (NORMAL_CLOSE)");
-            log_line("manager", "NORMAL CLOSE (Ctrl+C): stop spawning new clients, wait for remaining to finish.");
-            term_printf(C_YEL, "[CLOSE] normal close: stop spawning new clients\n");
-            break;
+            term_printf(C_YEL, "[CLOSE] normal close: stop spawning, draining (20s timeout)\n");
         }
 
-        if (clients > 0 && i > clients) {
+        if (!close_started && clients > 0 && i > clients) {
+            close_started = 1;
+            stop_spawning = 1;
+
             sem_lock(ipc.sem_id);
             ipc.st->closing = 1;
             sem_unlock(ipc.sem_id);
-            log_line("manager", "NORMAL CLOSE: client limit reached, waiting for remaining to finish.");
-            break;
+
+            drain_deadline = now_ms() + 20000;
+            print_final_status(&ipc, "FINAL_STATUS (LIMIT_REACHED)");
+            term_printf(C_YEL, "[CLOSE] limit reached: stop spawning, draining (20s timeout)\n");
         }
 
         long long now = now_ms();
@@ -270,18 +318,31 @@ int main(int argc, char **argv) {
             int tables, total, occ, pend, res, res_rem, dishes, closing, fire;
             snapshot_status(&ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &closing, &fire);
 
-            log_line("manager",
-                     "STATUS tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d",
-                     tables, total, occ, pend, res, res_rem, dishes, closing, fire);
-
             term_printf(C_CYN,
                 "[STATUS] tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d\n",
                 tables, total, occ, pend, res, res_rem, dishes, closing, fire);
 
             last_status = now;
+
+            if (close_started && occ == 0 && pend == 0) {
+                term_printf(C_YEL, "[CLOSE] drain complete (bar empty)\n");
+                break;
+            }
         }
 
-        if (now >= next_spawn_at) {
+        if (close_started && drain_deadline > 0 && now >= drain_deadline) {
+            term_printf(C_YEL, "[CLOSE] drain timeout -> terminate clients (SIGTERM)\n");
+            log_line("manager", "DRAIN TIMEOUT: terminate clients (SIGTERM).");
+
+            for (int k = 0; k < spawned; k++) {
+                if (kill(client_pids[k], SIGTERM) == -1) {
+                    if (errno != ESRCH) perror("kill client");
+                }
+            }
+            break;
+        }
+
+        if (!stop_spawning && now >= next_spawn_at) {
             if (spawned < (int)(sizeof(client_pids)/sizeof(client_pids[0]))) {
                 char idbuf[32];
                 snprintf(idbuf, sizeof(idbuf), "%d", i);
@@ -290,7 +351,7 @@ int main(int argc, char **argv) {
                 log_line("manager", "Spawned client %d pid=%d", i, (int)cpid);
             }
             i++;
-            next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max, i);
+            next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
         }
 
         if (now - last_tick >= 200) {
@@ -305,35 +366,34 @@ int main(int argc, char **argv) {
     }
 
     if (g_fire) {
-        log_line("manager", "FIRE (SIGTERM) received -> evacuating clients NOW.");
         term_printf(C_RED, "[FIRE] evacuating clients NOW!\n");
+        log_line("manager", "FIRE received -> evacuating clients NOW.");
+
         sem_lock(ipc.sem_id);
         ipc.st->fire_alarm = 1;
         ipc.st->closing = 1;
         sem_unlock(ipc.sem_id);
+
         print_final_status(&ipc, "FINAL_STATUS (FIRE)");
 
         for (int k = 0; k < spawned; k++) {
-             if (kill(client_pids[k], SIGTERM) == -1) {
-                 if (errno != ESRCH) perror("kill client");
-             }
+            if (kill(client_pids[k], SIGTERM) == -1) {
+                if (errno != ESRCH) perror("kill client");
+            }
         }
     }
 
-    while (finished < spawned) {
-        pid_t w = waitpid(-1, NULL, 0);
-        if (w > 0) finished++;
-    }
+    for (int k = 0; k < spawned; k++) stop_pid(client_pids[k], "client", 1500);
+    stop_pid(worker, "worker", 2000);
+    stop_pid(cashier, "cashier", 2000);
 
-    log_line("manager", "Stopping worker/cashier (shutdown).");
-    if (kill(worker, SIGTERM) == -1) {
-        if (errno != ESRCH) perror("kill worker");
+    while (1) {
+        pid_t w = waitpid(-1, NULL, 0);
+        if (w > 0) continue;
+        if (w == -1 && errno == EINTR) continue;
+        if (w == -1 && errno == ECHILD) break;
+        if (w == -1) { perror("waitpid"); break; }
     }
-    if (kill(cashier, SIGTERM) == -1) {
-        if (errno != ESRCH) perror("kill cashier");
-    }
-    waitpid(worker, NULL, 0);
-    waitpid(cashier, NULL, 0);
 
     log_line("manager", "Cleaning IPC and exiting.");
     ipc_close(&ipc);
