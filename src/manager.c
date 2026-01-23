@@ -398,5 +398,8 @@ int main(int argc, char **argv) {
     log_line("manager", "Cleaning IPC and exiting.");
     ipc_close(&ipc);
     ipc_destroy(&ipc);
+    if (unlink("ipc.key") == -1) {
+        if (errno != ENOENT) perror("unlink ipc.key");
+    }
     return 0;
 }

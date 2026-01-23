@@ -22,13 +22,22 @@ bool ipc_create(IPC *ipc, const char *keyfile) {
     key_t k_msg = make_key(keyfile, 0x45);
 
     ipc->shm_id = shmget(k_shm, sizeof(SharedState), IPC_CREAT | IPC_EXCL | IPC_PERMS);
-    if (ipc->shm_id == -1) return false;
+    if (ipc->shm_id == -1) { perror("shmget"); return false; }
 
     ipc->sem_id = semget(k_sem, 1, IPC_CREAT | IPC_EXCL | IPC_PERMS);
-    if (ipc->sem_id == -1) return false;
+    if (ipc->sem_id == -1) {
+        perror("semget");
+        if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID (rollback)");
+        return false;
+    }
 
     ipc->msg_id = msgget(k_msg, IPC_CREAT | IPC_EXCL | IPC_PERMS);
-    if (ipc->msg_id == -1) return false;
+    if (ipc->msg_id == -1) {
+        perror("msgget");
+        if (semctl(ipc->sem_id, 0, IPC_RMID) == -1) perror("semctl IPC_RMID (rollback)");
+        if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID (rollback)");
+        return false;
+    }
 
     ipc->st = (SharedState*)shmat(ipc->shm_id, NULL, 0);
     if (ipc->st == (void*)-1) DIE_PERROR("shmat");
@@ -49,13 +58,13 @@ bool ipc_open(IPC *ipc, const char *keyfile) {
     key_t k_msg = make_key(keyfile, 0x45);
 
     ipc->shm_id = shmget(k_shm, sizeof(SharedState), IPC_PERMS);
-    if (ipc->shm_id == -1) return false;
+    if (ipc->shm_id == -1) { perror("shmget"); return false; }
 
     ipc->sem_id = semget(k_sem, 1, IPC_PERMS);
-    if (ipc->sem_id == -1) return false;
+    if (ipc->sem_id == -1) { perror("semget"); return false; }
 
     ipc->msg_id = msgget(k_msg, IPC_PERMS);
-    if (ipc->msg_id == -1) return false;
+    if (ipc->msg_id == -1) { perror("msgget"); return false; }
 
     ipc->st = (SharedState*)shmat(ipc->shm_id, NULL, 0);
     if (ipc->st == (void*)-1) DIE_PERROR("shmat");
@@ -70,19 +79,31 @@ void ipc_close(IPC *ipc) {
 }
 
 void ipc_destroy(IPC *ipc) {
-    if (ipc->msg_id > 0) msgctl(ipc->msg_id, IPC_RMID, NULL);
-    if (ipc->shm_id > 0) shmctl(ipc->shm_id, IPC_RMID, NULL);
-    if (ipc->sem_id > 0) semctl(ipc->sem_id, 0, IPC_RMID);
+    if (ipc->msg_id > 0) {
+        if (msgctl(ipc->msg_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID");
+    }
+    if (ipc->shm_id > 0) {
+        if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID");
+    }
+    if (ipc->sem_id > 0) {
+        if (semctl(ipc->sem_id, 0, IPC_RMID) == -1) perror("semctl IPC_RMID");
+    }
 }
 
 void sem_lock(int sem_id) {
     struct sembuf op = { .sem_num = SEM_MUTEX, .sem_op = -1, .sem_flg = 0 };
-    if (semop(sem_id, &op, 1) == -1) DIE_PERROR("semop lock");
+    while (semop(sem_id, &op, 1) == -1) {
+        if (errno == EINTR) continue;
+        DIE_PERROR("semop lock");
+    }
 }
 
 void sem_unlock(int sem_id) {
     struct sembuf op = { .sem_num = SEM_MUTEX, .sem_op = +1, .sem_flg = 0 };
-    if (semop(sem_id, &op, 1) == -1) DIE_PERROR("semop unlock");
+    while (semop(sem_id, &op, 1) == -1) {
+        if (errno == EINTR) continue;
+        DIE_PERROR("semop unlock");
+    }
 }
 
 void ipc_init_tables_for_manager(IPC *ipc, int x1, int x2, int x3, int x4) {
@@ -228,7 +249,6 @@ int add_more_x3_tables_once(IPC *ipc) {
     sem_unlock(ipc->sem_id);
     return added;
 }
-
 
 int reserve_seats_fixed(IPC *ipc, int seats) {
     if (seats <= 0) return 0;
