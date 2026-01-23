@@ -1,20 +1,27 @@
 #pragma once
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <stdarg.h>
-#include <stdbool.h>
 #include <errno.h>
-#include <string.h>
-#include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/types.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdarg.h>
+
+#define EAT_BASE_MS 400
+#define EAT_STEP_MS 120
+#define EAT_VARIANTS 5
+#define EAT_MAX_MS (EAT_BASE_MS + (EAT_VARIANTS-1)*EAT_STEP_MS)
+#define DRAIN_TIMEOUT_MS 20000
+#define DRAIN_NO_PROGRESS_MS 3000
 
 #define DIE_PERROR(msg) do { perror(msg); exit(EXIT_FAILURE); } while(0)
 
-void ensure_logs_dir(void);
-void log_line(const char *role, const char *fmt, ...);
-uint64_t now_ms(void);
-void sleep_ms(int ms);
 int parse_int(const char *s, int minv, int maxv, const char *name);
+long long now_ms(void);
+void sleep_ms(int ms);
+
+void ensure_log_dir(void);
+void log_line(const char *who, const char *fmt, ...);

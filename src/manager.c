@@ -26,6 +26,65 @@ static void on_close(int sig){ (void)sig; g_close = 1; }
 
 static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
 
+typedef struct {
+    pid_t pid;
+    int stage;
+    int group_size;
+    int table_index;
+} ClientTrack;
+
+static ClientTrack* find_track(ClientTrack *tracks, int n, pid_t pid) {
+    for (int i = 0; i < n; i++) {
+        if (tracks[i].pid == pid) return &tracks[i];
+    }
+    return NULL;
+}
+
+static void cleanup_if_needed(IPC *ipc, ClientTrack *tracks, int n, pid_t pid, const char *where) {
+    ClientTrack *t = find_track(tracks, n, pid);
+    if (!t) return;
+
+    if (t->stage == 1) {
+        cancel_reservation(ipc, t->group_size, t->table_index);
+        log_line("manager", "CLEANUP(%s): pid=%d pending -> cancel_reservation(group=%d table=%d)",
+                 where, (int)pid, t->group_size, t->table_index);
+        t->stage = 0;
+    } else if (t->stage == 2) {
+        finish_eating_and_leave(ipc, t->group_size, t->table_index);
+        log_line("manager", "CLEANUP(%s): pid=%d seated -> finish_eating_and_leave(group=%d table=%d)",
+                 where, (int)pid, t->group_size, t->table_index);
+        t->stage = 0;
+    }
+}
+
+static void drain_manager_msgs(IPC *ipc, ClientTrack *tracks, int n) {
+    for (;;) {
+        Msg m;
+        ssize_t r = msgrcv(ipc->msg_id, &m, msgsz(), MTYPE_MANAGER, IPC_NOWAIT);
+        if (r == -1) {
+            if (errno == EINTR) continue;
+            if (errno == ENOMSG) break;
+            perror("manager msgrcv MTYPE_MANAGER");
+            break;
+        }
+
+        ClientTrack *t = find_track(tracks, n, m.pid);
+        if (!t) continue;
+
+        if (m.kind == MSG_CLIENT_PENDING) {
+            t->stage = 1;
+            t->group_size = m.group_size;
+            t->table_index = m.table_index;
+        } else if (m.kind == MSG_CLIENT_SEATED) {
+            t->stage = 2;
+            t->group_size = m.group_size;
+            t->table_index = m.table_index;
+        } else if (m.kind == MSG_CLIENT_LEFT) {
+            t->stage = 0;
+        }
+    }
+}
+
 static pid_t spawn(const char *path, const char *arg1) {
     pid_t pid = fork();
     if (pid == -1) DIE_PERROR("fork");
@@ -110,10 +169,13 @@ static void print_final_status(IPC *ipc, const char *tag) {
         tag, tables, total, occ, pend, res, res_rem, dishes, closing, fire);
 }
 
-static void reap_nonblocking(void) {
+static void reap_nonblocking(IPC *ipc, ClientTrack *tracks, int n) {
     for (;;) {
         pid_t w = waitpid(-1, NULL, WNOHANG);
-        if (w > 0) continue;
+        if (w > 0) {
+            cleanup_if_needed(ipc, tracks, n, w, "reap");
+            continue;
+        }
         if (w == 0) break;
         if (w == -1 && errno == EINTR) continue;
         if (w == -1 && errno == ECHILD) break;
@@ -121,7 +183,8 @@ static void reap_nonblocking(void) {
     }
 }
 
-static void stop_pid(pid_t pid, const char *name, int grace_ms) {
+static void stop_pid(IPC *ipc, ClientTrack *tracks, int n,
+                     pid_t pid, const char *name, int grace_ms) {
     if (pid <= 0) return;
 
     if (kill(pid, SIGTERM) == -1) {
@@ -136,7 +199,10 @@ static void stop_pid(pid_t pid, const char *name, int grace_ms) {
     long long deadline = (long long)now_ms() + (long long)grace_ms;
     while ((long long)now_ms() < deadline) {
         pid_t w = waitpid(pid, NULL, WNOHANG);
-        if (w == pid) return;
+        if (w == pid) {
+            cleanup_if_needed(ipc, tracks, n, w, "stop_pid");
+            return;
+        }
         if (w == -1 && errno == ECHILD) return;
         if (w == -1 && errno == EINTR) continue;
         sleep_ms(50);
@@ -149,7 +215,8 @@ static void stop_pid(pid_t pid, const char *name, int grace_ms) {
             perror(buf);
         }
     }
-    (void)waitpid(pid, NULL, 0);
+    pid_t w = waitpid(pid, NULL, 0);
+    if (w == pid) cleanup_if_needed(ipc, tracks, n, w, "stop_pid_kill");
 }
 
 static void send_reserve_tick(IPC *ipc) {
@@ -168,7 +235,7 @@ int main(int argc, char **argv) {
     if (argc < 5) {
         fprintf(stderr, "Usage: %s X1 X2 X3 X4 [CLIENTS] [RESERVESEATS] [ARR_MIN_MS] [ARR_MAX_MS] [SEED]\n", argv[0]);
         fprintf(stderr, "  CLIENTS=0 -> tryb ciagly\n");
-        fprintf(stderr, "  Ctrl+C (SIGINT) -> normal close (drain 20s, potem force close)\n");
+        fprintf(stderr, "  Ctrl+C (SIGINT) -> normal close (drain timeout)\n");
         fprintf(stderr, "  SIGTERM -> POZAR (fire_alarm=1, ewakuacja natychmiast)\n");
         return 1;
     }
@@ -202,6 +269,9 @@ int main(int argc, char **argv) {
     else seed = (unsigned int)time(NULL) ^ (unsigned int)getpid();
     srand(seed);
 
+    log_line("manager", "TIMES: eat=[%d,%d]ms drain=%dms no_progress=%dms arr=[%d,%d]ms seed=%u",
+             EAT_BASE_MS, EAT_MAX_MS, DRAIN_TIMEOUT_MS, DRAIN_NO_PROGRESS_MS, arr_min, arr_max, seed);
+
     IPC ipc;
     if (!ipc_create(&ipc, "ipc.key")) {
         if (!ipc_open(&ipc, "ipc.key")) {
@@ -218,13 +288,13 @@ int main(int argc, char **argv) {
     ipc.st->closing = 0;
     sem_unlock(ipc.sem_id);
 
-    log_line("manager", "RNG seed=%u", seed);
     log_line("manager", "Manager started pid=%d. Spawning worker+cashier.", (int)getpid());
 
     pid_t worker = spawn("./bin/worker", NULL);
     pid_t cashier = spawn("./bin/cashier", NULL);
 
     pid_t client_pids[6000];
+    ClientTrack tracks[6000];
     int spawned = 0;
 
     int i = 1;
@@ -236,6 +306,9 @@ int main(int argc, char **argv) {
     long long last_status = now_ms();
 
     long long drain_deadline = -1;
+    long long last_progress_at = -1;
+    int last_occ = -1;
+    int last_pend = -1;
 
     while (!g_fire) {
         if (g_usr1) {
@@ -283,7 +356,8 @@ int main(int argc, char **argv) {
             }
         }
 
-        reap_nonblocking();
+        drain_manager_msgs(&ipc, tracks, spawned);
+        reap_nonblocking(&ipc, tracks, spawned);
 
         if (g_close && !close_started) {
             g_close = 0;
@@ -294,9 +368,13 @@ int main(int argc, char **argv) {
             ipc.st->closing = 1;
             sem_unlock(ipc.sem_id);
 
-            drain_deadline = now_ms() + 20000;
-            print_final_status(&ipc, "FINAL_STATUS (NORMAL_CLOSE)");
-            term_printf(C_YEL, "[CLOSE] normal close: stop spawning, draining (20s timeout)\n");
+            drain_deadline = now_ms() + DRAIN_TIMEOUT_MS;
+            last_progress_at = now_ms();
+            last_occ = -1;
+            last_pend = -1;
+
+            print_final_status(&ipc, "CLOSE_STARTED_STATUS (NORMAL_CLOSE)");
+            term_printf(C_YEL, "[CLOSE] normal close: stop spawning, draining (timeout=%dms)\n", DRAIN_TIMEOUT_MS);
         }
 
         if (!close_started && clients > 0 && i > clients) {
@@ -307,9 +385,13 @@ int main(int argc, char **argv) {
             ipc.st->closing = 1;
             sem_unlock(ipc.sem_id);
 
-            drain_deadline = now_ms() + 20000;
-            print_final_status(&ipc, "FINAL_STATUS (LIMIT_REACHED)");
-            term_printf(C_YEL, "[CLOSE] limit reached: stop spawning, draining (20s timeout)\n");
+            drain_deadline = now_ms() + DRAIN_TIMEOUT_MS;
+            last_progress_at = now_ms();
+            last_occ = -1;
+            last_pend = -1;
+
+            print_final_status(&ipc, "CLOSE_STARTED_STATUS (LIMIT_REACHED)");
+            term_printf(C_YEL, "[CLOSE] limit reached: stop spawning, draining (timeout=%dms)\n", DRAIN_TIMEOUT_MS);
         }
 
         long long now = now_ms();
@@ -324,8 +406,32 @@ int main(int argc, char **argv) {
 
             last_status = now;
 
+            if (close_started) {
+                if (occ != last_occ || pend != last_pend) {
+                    last_progress_at = now;
+                    last_occ = occ;
+                    last_pend = pend;
+                }
+            }
+
             if (close_started && occ == 0 && pend == 0) {
                 term_printf(C_YEL, "[CLOSE] drain complete (bar empty)\n");
+                print_final_status(&ipc, "FINAL_STATUS (END)");
+                break;
+            }
+
+            if (close_started && (occ > 0 || pend > 0) &&
+                last_progress_at > 0 && (now - last_progress_at) >= DRAIN_NO_PROGRESS_MS) {
+
+                term_printf(C_YEL, "[CLOSE] no progress for %dms -> terminate clients (SIGTERM)\n",
+                            DRAIN_NO_PROGRESS_MS);
+                log_line("manager", "NO PROGRESS %dms: terminate clients (SIGTERM).", DRAIN_NO_PROGRESS_MS);
+
+                for (int k = 0; k < spawned; k++) {
+                    if (kill(client_pids[k], SIGTERM) == -1) {
+                        if (errno != ESRCH) perror("kill client");
+                    }
+                }
                 break;
             }
         }
@@ -347,7 +453,14 @@ int main(int argc, char **argv) {
                 char idbuf[32];
                 snprintf(idbuf, sizeof(idbuf), "%d", i);
                 pid_t cpid = spawn("./bin/client", idbuf);
-                client_pids[spawned++] = cpid;
+
+                client_pids[spawned] = cpid;
+                tracks[spawned].pid = cpid;
+                tracks[spawned].stage = 0;
+                tracks[spawned].group_size = 0;
+                tracks[spawned].table_index = -1;
+                spawned++;
+
                 log_line("manager", "Spawned client %d pid=%d", i, (int)cpid);
             }
             i++;
@@ -383,13 +496,16 @@ int main(int argc, char **argv) {
         }
     }
 
-    for (int k = 0; k < spawned; k++) stop_pid(client_pids[k], "client", 1500);
-    stop_pid(worker, "worker", 2000);
-    stop_pid(cashier, "cashier", 2000);
+    for (int k = 0; k < spawned; k++) stop_pid(&ipc, tracks, spawned, client_pids[k], "client", 1500);
+    stop_pid(&ipc, tracks, spawned, worker, "worker", 2000);
+    stop_pid(&ipc, tracks, spawned, cashier, "cashier", 2000);
 
     while (1) {
         pid_t w = waitpid(-1, NULL, 0);
-        if (w > 0) continue;
+        if (w > 0) {
+            cleanup_if_needed(&ipc, tracks, spawned, w, "final_wait");
+            continue;
+        }
         if (w == -1 && errno == EINTR) continue;
         if (w == -1 && errno == ECHILD) break;
         if (w == -1) { perror("waitpid"); break; }
