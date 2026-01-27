@@ -28,6 +28,7 @@
 #define MSG_CLIENT_SEATED 10
 #define MSG_CLIENT_LEFT 11
 #define MSG_DISH_RETURN_REPLY 12
+#define MSG_RESERVE_ASK 13
 
 typedef struct {
     long mtype;

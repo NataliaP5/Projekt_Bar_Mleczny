@@ -8,6 +8,11 @@
 static volatile sig_atomic_t g_stop = 0;
 static void on_term(int sig){ (void)sig; g_stop = 1; }
 
+static volatile sig_atomic_t g_sigusr1 = 0;
+static volatile sig_atomic_t g_sigusr2 = 0;
+static void on_usr1(int sig){ (void)sig; g_sigusr1 = 1; }
+static void on_usr2(int sig){ (void)sig; g_sigusr2 = 1; }
+
 static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
 
 static int do_reserve_attempt(IPC *ipc) {
@@ -36,6 +41,10 @@ int main(void) {
     sa.sa_flags = 0;
     sa.sa_handler = on_term;
     if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
+    sa.sa_handler = on_usr1;
+    if (sigaction(SIGUSR1, &sa, NULL) == -1) DIE_PERROR("sigaction SIGUSR1");
+    sa.sa_handler = on_usr2;
+    if (sigaction(SIGUSR2, &sa, NULL) == -1) DIE_PERROR("sigaction SIGUSR2");
 
     IPC ipc;
     if (!ipc_open(&ipc, "ipc.key")) {
@@ -46,6 +55,27 @@ int main(void) {
     log_line("worker", "Worker started pid=%d", (int)getpid());
 
     while (!g_stop) {
+        if (g_sigusr1) {
+            g_sigusr1 = 0;
+            int added = add_more_x3_tables_once(&ipc);
+            if (added > 0) log_line("worker", "SIGUSR1: added %d new 3-seat tables (once)", added);
+            else           log_line("worker", "SIGUSR1: ignored (boost already used)");
+        }
+
+        if (g_sigusr2) {
+            g_sigusr2 = 0;
+            Msg ask;
+            memset(&ask, 0, sizeof(ask));
+            ask.mtype = MTYPE_MANAGER;
+            ask.kind  = MSG_RESERVE_ASK;
+            ask.pid   = getpid();
+            if (msgsnd(ipc.msg_id, &ask, msgsz(), IPC_NOWAIT) == -1) {
+                if (errno != EAGAIN) perror("worker msgsnd RESERVE_ASK");
+            } else {
+                log_line("worker", "SIGUSR2: sent RESERVE_ASK to manager");
+            }
+        }
+
         Msg req;
         ssize_t r = msgrcv(ipc.msg_id, &req, msgsz(), MTYPE_WORKER, 0);
         if (r == -1) {
@@ -94,16 +124,17 @@ int main(void) {
             case MSG_RESERVE_REQ: {
                 int got = do_reserve_attempt(&ipc);
 
-                Msg rep;
-                memset(&rep, 0, sizeof(rep));
-                rep.mtype = (long)req.pid;
-                rep.kind = MSG_RESERVE_REPLY;
-                rep.pid = req.pid;
-                rep.value = got;
-
-                if (msgsnd(ipc.msg_id, &rep, msgsz(), 0) == -1) {
-                    perror("worker msgsnd RESERVE_REPLY");
-                    g_stop = 1;
+                if (req.pid > 0) {
+                    Msg rep;
+                    memset(&rep, 0, sizeof(rep));
+                    rep.mtype = (long)req.pid;
+                    rep.kind = MSG_RESERVE_REPLY;
+                    rep.pid = req.pid;
+                    rep.value = got;
+                    if (msgsnd(ipc.msg_id, &rep, msgsz(), 0) == -1) {
+                        perror("worker msgsnd RESERVE_REPLY");
+                        g_stop = 1;
+                    }
                 }
                 break;
             }

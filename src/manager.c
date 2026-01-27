@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <string.h>
 
 #define C_RESET "\033[0m"
 #define C_RED   "\033[31m"
@@ -57,7 +58,25 @@ static void cleanup_if_needed(IPC *ipc, ClientTrack *tracks, int n, pid_t pid, c
     }
 }
 
-static void drain_manager_msgs(IPC *ipc, ClientTrack *tracks, int n) {
+static int read_reserve_from_stdin(void) {
+    for (int tries = 0; tries < 3; tries++) {
+        char buf[64];
+        fprintf(stderr, "\n[RESERVE] Podaj liczbe miejsc do rezerwacji (0..2000): ");
+        fflush(stderr);
+        if (!fgets(buf, sizeof(buf), stdin)) return 0;
+
+        errno = 0;
+        char *end = NULL;
+        long v = strtol(buf, &end, 10);
+        while (end && (*end == ' ' || *end == '\n' || *end == '\t')) end++;
+        if (errno == 0 && end && (*end == '\0') && v >= 0 && v <= 2000) return (int)v;
+
+        fprintf(stderr, "[RESERVE] Niepoprawna wartosc.\n");
+    }
+    return 0;
+}
+
+static void drain_manager_msgs(IPC *ipc, ClientTrack *tracks, int n, int reserve_target) {
     for (;;) {
         Msg m;
         ssize_t r = msgrcv(ipc->msg_id, &m, msgsz(), MTYPE_MANAGER, IPC_NOWAIT);
@@ -66,6 +85,30 @@ static void drain_manager_msgs(IPC *ipc, ClientTrack *tracks, int n) {
             if (errno == ENOMSG) break;
             perror("manager msgrcv MTYPE_MANAGER");
             break;
+        }
+
+        if (m.kind == MSG_RESERVE_ASK) {
+            int want = reserve_target;
+            if (want <= 0) want = read_reserve_from_stdin();
+
+            sem_lock(ipc->sem_id);
+            ipc->st->reserve_remaining += want;
+            int rem = ipc->st->reserve_remaining;
+            sem_unlock(ipc->sem_id);
+
+            log_line("manager", "RESERVE_ASK from worker pid=%d -> want=%d, reserve_remaining=%d",
+                     (int)m.pid, want, rem);
+
+            Msg req;
+            memset(&req, 0, sizeof(req));
+            req.mtype = MTYPE_WORKER;
+            req.kind  = MSG_RESERVE_REQ;
+            req.pid   = 0;
+            req.value = want;
+            if (msgsnd(ipc->msg_id, &req, msgsz(), 0) == -1) {
+                perror("manager msgsnd RESERVE_REQ (from ASK)");
+            }
+            continue;
         }
 
         ClientTrack *t = find_track(tracks, n, m.pid);
@@ -246,7 +289,7 @@ int main(int argc, char **argv) {
     int X4 = parse_int(argv[4], 0, 100, "X4");
 
     int clients = (argc >= 6) ? parse_int(argv[5], 0, 1000000, "CLIENTS") : 120;
-    int reserve_target = (argc >= 7) ? parse_int(argv[6], 0, 2000, "RESERVESEATS") : -1;
+    int reserve_target = (argc >= 7) ? parse_int(argv[6], -1, 2000, "RESERVESEATS") : -1;
     int arr_min = (argc >= 8) ? parse_int(argv[7], 0, 60000, "ARR_MIN_MS") : 60;
     int arr_max = (argc >= 9) ? parse_int(argv[8], 0, 60000, "ARR_MAX_MS") : 200;
     int seed_arg = (argc >= 10) ? parse_int(argv[9], 0, 2147483647, "SEED") : -1;
@@ -313,50 +356,19 @@ int main(int argc, char **argv) {
     while (!g_fire) {
         if (g_usr1) {
             g_usr1 = 0;
-            int added = add_more_x3_tables_once(&ipc);
-            if (added > 0) log_line("manager", "SIGUSR1: added %d new 3-seat tables (once)", added);
-            else           log_line("manager", "SIGUSR1: ignored (boost already used)");
-            term_printf(C_MAG, "[SIGUSR1] boost X3 tables\n");
+            if (kill(worker, SIGUSR1) == -1) perror("manager kill(worker, SIGUSR1)");
+            log_line("manager", "SIGUSR1: forwarded to worker pid=%d", (int)worker);
+            term_printf(C_MAG, "[SIGUSR1] forwarded to worker\n");
         }
 
         if (g_usr2) {
             g_usr2 = 0;
-
-            int want = reserve_target;
-            if (want <= 0) {
-                char buf[64];
-                fprintf(stderr, "\n[SIGUSR2] Podaj liczbe miejsc do rezerwacji: ");
-                fflush(stderr);
-                if (fgets(buf, sizeof(buf), stdin)) want = (int)strtol(buf, NULL, 10);
-                else want = 0;
-                if (want < 0) want = 0;
-            }
-
-            sem_lock(ipc.sem_id);
-            ipc.st->reserve_remaining += want;
-            int rem = ipc.st->reserve_remaining;
-            sem_unlock(ipc.sem_id);
-
-            log_line("manager", "SIGUSR2: requested %d seats; reserve_remaining now=%d", want, rem);
-            term_printf(C_BLU, "[SIGUSR2] reservation requested\n");
-
-            Msg m;
-            memset(&m, 0, sizeof(m));
-            m.mtype = MTYPE_WORKER;
-            m.kind  = MSG_RESERVE_REQ;
-            m.pid   = getpid();
-            m.value = want;
-
-            if (msgsnd(ipc.msg_id, &m, msgsz(), 0) == -1) {
-                perror("manager msgsnd RESERVE_REQ");
-            } else {
-                Msg rep;
-                ssize_t r = msgrcv(ipc.msg_id, &rep, msgsz(), (long)getpid(), 0);
-                if (r == -1) perror("manager msgrcv RESERVE_REPLY");
-            }
+            if (kill(worker, SIGUSR2) == -1) perror("manager kill(worker, SIGUSR2)");
+            log_line("manager", "SIGUSR2: forwarded to worker pid=%d", (int)worker);
+            term_printf(C_BLU, "[SIGUSR2] forwarded to worker (reservation handshake)\n");
         }
 
-        drain_manager_msgs(&ipc, tracks, spawned);
+        drain_manager_msgs(&ipc, tracks, spawned, reserve_target);
         reap_nonblocking(&ipc, tracks, spawned);
 
         if (g_close && !close_started) {
