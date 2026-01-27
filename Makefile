@@ -35,4 +35,4 @@ clean:
 	rm -rf $(BIN)
 
 run:
-	./bin/manager 2 2 2 1 --clients 50 --arrival-ms 200 --eat-ms-min 800 --eat-ms-max 1800 --noorder-pct 5 --reserve-seats 4
+	./bin/manager 2 2 2 1 50 4 60 200
