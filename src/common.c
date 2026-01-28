@@ -18,10 +18,18 @@ long long now_ms(void) {
 
 void sleep_ms(int ms) {
     if (ms <= 0) return;
-    struct timespec ts;
-    ts.tv_sec = ms / 1000;
-    ts.tv_nsec = (ms % 1000) * 1000000L;
-    nanosleep(&ts, NULL);
+
+    struct timespec req, rem;
+    req.tv_sec = ms / 1000;
+    req.tv_nsec = (ms % 1000) * 1000000L;
+
+    while (nanosleep(&req, &rem) == -1) {
+        if (errno == EINTR) {
+            req = rem;
+            continue;
+        }
+        DIE_PERROR("nanosleep");
+    }
 }
 
 void log_line(const char *role, const char *fmt, ...) {
