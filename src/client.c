@@ -4,6 +4,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#define WAIT_SEAT_TIMEOUT_MS 8000
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_term(int sig) { (void)sig; g_stop = 1; }
@@ -188,16 +189,23 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    long long seat_deadline = now_ms() + WAIT_SEAT_TIMEOUT_MS;
     while (!g_stop) {
         int picked = pick_table_and_reserve(&ipc, group, &table);
         if (picked >= 0) { pending = 1; break; }
+        if (now_ms() >= seat_deadline) break;
         sleep_ms(120);
     }
 
     if (!pending || g_stop) {
         int fire = is_fire_now(&ipc);
-        if (fire) log_line("client", "Client %d evacuated before reserving seat", id);
-        else      log_line("client", "Client %d stopped before reserving seat", id);
+        if (fire) {
+            log_line("client", "Client %d evacuated before reserving seat", id);
+        } else if (g_stop) {
+            log_line("client", "Client %d stopped before reserving seat", id);
+        } else {
+            log_line("client", "Client %d left (no seat after %dms)", id, WAIT_SEAT_TIMEOUT_MS);
+        }
         ipc_close(&ipc);
         return 0;
     }
