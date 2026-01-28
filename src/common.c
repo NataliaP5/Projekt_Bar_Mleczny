@@ -3,7 +3,7 @@
 
 static int g_fd = -1;
 
-void ensure_logs_dir(void) {
+void ensure_log_dir(void) {
     struct stat st;
     if (stat("logs", &st) == -1) {
         if (mkdir("logs", 0700) == -1) DIE_PERROR("mkdir logs");
@@ -25,7 +25,7 @@ void sleep_ms(int ms) {
 }
 
 void log_line(const char *role, const char *fmt, ...) {
-    ensure_logs_dir();
+    ensure_log_dir();
 
     if (g_fd == -1) {
         char path[256];

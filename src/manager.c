@@ -508,9 +508,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    for (int k = 0; k < spawned; k++) stop_pid(&ipc, tracks, spawned, client_pids[k], "client", 1500);
-    stop_pid(&ipc, tracks, spawned, worker, "worker", 2000);
-    stop_pid(&ipc, tracks, spawned, cashier, "cashier", 2000);
+    for (int k = 0; k < spawned; k++) stop_pid(&ipc, tracks, spawned, client_pids[k], "client", 300);
+    stop_pid(&ipc, tracks, spawned, worker, "worker", 500);
+    stop_pid(&ipc, tracks, spawned, cashier, "cashier", 500);
 
     while (1) {
         pid_t w = waitpid(-1, NULL, 0);
