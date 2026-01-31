@@ -4,6 +4,11 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+
+#include <pthread.h>
+#include <stdint.h>
+#include <time.h>
+
 #define WAIT_SEAT_TIMEOUT_MS 8000
 
 static volatile sig_atomic_t g_stop = 0;
@@ -41,7 +46,6 @@ static void notify_manager(IPC *ipc, int kind, pid_t me, int group, int table, i
         return;
     }
 }
-
 
 static int wait_reply(IPC *ipc, long mytype, int expected_kind, Msg *out) {
     while (!g_stop) {
@@ -99,14 +103,105 @@ static int send_serve_request(IPC *ipc, pid_t me, int group, int table) {
     return rep.value != 0;
 }
 
-static void eat_interruptible(int total_ms) {
-    const int step = 20;
-    int left = total_ms;
-    while (left > 0 && !g_stop) {
-        int s = (left > step) ? step : left;
-        sleep_ms(s);
-        left -= s;
+typedef struct {
+    int group_size;
+    int finished;
+    pthread_mutex_t m;
+    pthread_cond_t  cv;
+} EatSync;
+
+typedef struct {
+    EatSync *sync;
+    int person_idx;
+    int client_id;
+} EatArg;
+
+static void* eater_thread(void *vp) {
+    EatArg *a = (EatArg*)vp;
+    EatSync *s = a->sync;
+
+    unsigned int seed =
+        (unsigned int)time(NULL) ^
+        (unsigned int)(uintptr_t)pthread_self() ^
+        (unsigned int)getpid() ^
+        (unsigned int)(a->person_idx * 2654435761u) ^
+        (unsigned int)(a->client_id * 1103515245u);
+
+    int eat_sec = (rand_r(&seed) % 6) + 2;
+
+    log_line("client", "Client %d | person %d: eating %d sec",
+             a->client_id, a->person_idx, eat_sec);
+
+    for (int i = 0; i < eat_sec; i++) {
+        if (g_stop) break;
+        sleep(1);
     }
+
+    pthread_mutex_lock(&s->m);
+    s->finished++;
+    if (s->finished >= s->group_size) {
+        pthread_cond_broadcast(&s->cv);
+    }
+    pthread_mutex_unlock(&s->m);
+
+    return NULL;
+}
+
+static void eat_group_with_threads(int group_size, int client_id) {
+    if (group_size <= 0) return;
+    if (group_size > 4) group_size = 4;
+
+    EatSync s;
+    s.group_size = group_size;
+    s.finished = 0;
+    pthread_mutex_init(&s.m, NULL);
+    pthread_cond_init(&s.cv, NULL);
+
+    pthread_t th[4];
+    EatArg args[4];
+    int created[4] = {0,0,0,0};
+
+    log_line("client", "Client %d: spawning %d eater threads", client_id, group_size);
+
+    for (int i = 0; i < group_size; i++) {
+        args[i].sync = &s;
+        args[i].person_idx = i + 1;
+        args[i].client_id = client_id;
+
+        int rc = pthread_create(&th[i], NULL, eater_thread, &args[i]);
+        if (rc != 0) {
+            errno = rc;
+            perror("pthread_create");
+            pthread_mutex_lock(&s.m);
+            s.finished++;
+            pthread_cond_broadcast(&s.cv);
+            pthread_mutex_unlock(&s.m);
+            created[i] = 0;
+        } else {
+            created[i] = 1;
+        }
+    }
+
+    pthread_mutex_lock(&s.m);
+    while (s.finished < s.group_size && !g_stop) {
+        pthread_cond_wait(&s.cv, &s.m);
+    }
+    pthread_mutex_unlock(&s.m);
+
+    for (int i = 0; i < group_size; i++) {
+        if (created[i]) {
+            int rc = pthread_join(th[i], NULL);
+            if (rc != 0) {
+                errno = rc;
+                perror("pthread_join");
+            }
+        }
+    }
+
+    log_line("client", "Client %d: all eater threads finished", client_id);
+
+    pthread_cond_destroy(&s.cv);
+    pthread_mutex_destroy(&s.m);
 }
 
 static void send_dish_return_fancy(IPC *ipc, pid_t me, int id, int group, int table, int fire) {
@@ -248,8 +343,7 @@ int main(int argc, char **argv) {
     notify_manager(&ipc, MSG_CLIENT_SEATED, me, group, table, 1);
     log_line("client", "Client %d seated table=%d group=%d", id, table, group);
 
-    int eat_ms = EAT_BASE_MS + (id % EAT_VARIANTS) * EAT_STEP_MS;
-    eat_interruptible(eat_ms);
+    eat_group_with_threads(group, id);
 
     int fire = is_fire_now(&ipc);
 

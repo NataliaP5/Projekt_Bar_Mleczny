@@ -1,6 +1,6 @@
 CC=gcc
 CFLAGS=-std=c11 -O2 -Wall -Wextra -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude
-LDFLAGS=
+LDFLAGS=-pthread
 
 BIN=bin
 SRC=src
