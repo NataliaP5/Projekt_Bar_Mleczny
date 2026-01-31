@@ -29,19 +29,19 @@ static void notify_manager(IPC *ipc, int kind, pid_t me, int group, int table, i
     m.table_index = table;
     m.value = value;
 
-    int max_attempts = (kind == MSG_CLIENT_LEFT || kind == MSG_CLIENT_SEATED) ? 8 : 3;
-    for (int attempt = 0; attempt < max_attempts; attempt++) {
-        if (msgsnd(ipc->msg_id, &m, msgsz(), IPC_NOWAIT) == 0) return;
+    for (;;) {
+        if (msgsnd(ipc->msg_id, &m, msgsz(), 0) == 0) return;
 
-        if (errno != EAGAIN) {
-            perror("client msgsnd MANAGER_NOTIFY");
-            return;
+        if (errno == EINTR) {
+            if (is_fire_now(ipc) || g_stop) return;
+            continue;
         }
 
-        if (is_fire_now(ipc)) return;
-        sleep_ms(10);
+        perror("client msgsnd MANAGER_NOTIFY");
+        return;
     }
 }
+
 
 static int wait_reply(IPC *ipc, long mytype, int expected_kind, Msg *out) {
     while (!g_stop) {
@@ -193,8 +193,15 @@ int main(int argc, char **argv) {
     while (!g_stop) {
         int picked = pick_table_and_reserve(&ipc, group, &table);
         if (picked >= 0) { pending = 1; break; }
-        if (now_ms() >= seat_deadline) break;
-        sleep_ms(120);
+
+        long long now = now_ms();
+        if (now >= seat_deadline) break;
+
+        int remaining = (int)(seat_deadline - now);
+        int wr = sem_timedwait_event_ms(ipc.sem_id, SEM_TABLE_EVENT, remaining);
+        if (wr < 0) {
+            continue;
+        }
     }
 
     if (!pending || g_stop) {

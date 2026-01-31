@@ -9,6 +9,8 @@
 
 #define IPC_PERMS 0600
 #define SEM_MUTEX 0
+#define SEM_TABLE_EVENT 1
+#define SEM_COUNT 2
 
 #define MTYPE_CASHIER 1
 #define MTYPE_WORKER  2
@@ -63,3 +65,6 @@ void finish_eating_and_leave(IPC *ipc, int group_size, int table_index);
 
 int add_more_x3_tables_once(IPC *ipc);
 int reserve_seats_fixed(IPC *ipc, int seats);
+
+int sem_timedwait_event_ms(int sem_id, unsigned short semnum, int timeout_ms);
+void sem_post_event(int sem_id, unsigned short semnum);

@@ -24,7 +24,7 @@ bool ipc_create(IPC *ipc, const char *keyfile) {
     ipc->shm_id = shmget(k_shm, sizeof(SharedState), IPC_CREAT | IPC_EXCL | IPC_PERMS);
     if (ipc->shm_id == -1) { perror("shmget"); return false; }
 
-    ipc->sem_id = semget(k_sem, 1, IPC_CREAT | IPC_EXCL | IPC_PERMS);
+    ipc->sem_id = semget(k_sem, SEM_COUNT, IPC_CREAT | IPC_EXCL | IPC_PERMS);
     if (ipc->sem_id == -1) {
         perror("semget");
         if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID (rollback)");
@@ -45,6 +45,9 @@ bool ipc_create(IPC *ipc, const char *keyfile) {
     union semun su;
     su.val = 1;
     if (semctl(ipc->sem_id, SEM_MUTEX, SETVAL, su) == -1) DIE_PERROR("semctl SETVAL");
+    su.val = 0;
+    if (semctl(ipc->sem_id, SEM_TABLE_EVENT, SETVAL, su) == -1)
+        DIE_PERROR("semctl SETVAL TABLE_EVENT");
 
     memset(ipc->st, 0, sizeof(*ipc->st));
     return true;
@@ -60,7 +63,7 @@ bool ipc_open(IPC *ipc, const char *keyfile) {
     ipc->shm_id = shmget(k_shm, sizeof(SharedState), IPC_PERMS);
     if (ipc->shm_id == -1) { perror("shmget"); return false; }
 
-    ipc->sem_id = semget(k_sem, 1, IPC_PERMS);
+    ipc->sem_id = semget(k_sem, SEM_COUNT, IPC_PERMS);
     if (ipc->sem_id == -1) { perror("semget"); return false; }
 
     ipc->msg_id = msgget(k_msg, IPC_PERMS);
@@ -103,6 +106,33 @@ void sem_unlock(int sem_id) {
     while (semop(sem_id, &op, 1) == -1) {
         if (errno == EINTR) continue;
         DIE_PERROR("semop unlock");
+    }
+}
+
+void sem_post_event(int sem_id, unsigned short semnum) {
+    struct sembuf op = { .sem_num = semnum, .sem_op = +1, .sem_flg = IPC_NOWAIT };
+    if (semop(sem_id, &op, 1) == -1) {
+        if (errno == EAGAIN) return;
+        if (errno == EINTR) return;
+        perror("semop post event");
+    }
+}
+
+int sem_timedwait_event_ms(int sem_id, unsigned short semnum, int timeout_ms) {
+    if (timeout_ms < 0) timeout_ms = 0;
+
+    struct timespec ts;
+    ts.tv_sec  = timeout_ms / 1000;
+    ts.tv_nsec = (timeout_ms % 1000) * 1000000L;
+
+    struct sembuf op = { .sem_num = semnum, .sem_op = -1, .sem_flg = 0 };
+
+    for (;;) {
+        if (semtimedop(sem_id, &op, 1, &ts) == 0) return 1;
+        if (errno == EINTR) return -1;
+        if (errno == EAGAIN) return 0;
+        perror("semtimedop");
+        return -1;
     }
 }
 
@@ -209,6 +239,7 @@ void cancel_reservation(IPC *ipc, int group_size, int table_index) {
         }
     }
     sem_unlock(ipc->sem_id);
+    sem_post_event(ipc->sem_id, SEM_TABLE_EVENT);
 }
 
 void finish_eating_and_leave(IPC *ipc, int group_size, int table_index) {
@@ -222,6 +253,7 @@ void finish_eating_and_leave(IPC *ipc, int group_size, int table_index) {
         }
     }
     sem_unlock(ipc->sem_id);
+    sem_post_event(ipc->sem_id, SEM_TABLE_EVENT);
 }
 
 int add_more_x3_tables_once(IPC *ipc) {
@@ -247,6 +279,7 @@ int add_more_x3_tables_once(IPC *ipc) {
     }
 
     sem_unlock(ipc->sem_id);
+    if (added > 0) sem_post_event(ipc->sem_id, SEM_TABLE_EVENT);
     return added;
 }
 
