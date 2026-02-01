@@ -10,6 +10,14 @@ static void on_term(int sig){ (void)sig; g_stop = 1; }
 
 static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
 
+static const char *menu_names[] = {
+    "Pierogi ruskie",
+    "Nalesniki z serem",
+    "Kotlet schabowy",
+    "Rosol",
+    "Pomidorowka"
+};
+
 int main(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -43,14 +51,32 @@ int main(void) {
             continue;
         }
 
+        const char *dish = "UNKNOWN";
+        int n = (int)(sizeof(menu_names) / sizeof(menu_names[0]));
+        if (req.dish_id >= 0 && req.dish_id < n) {
+            dish = menu_names[req.dish_id];
+        }
+
         int ok = 1;
+        long long new_total = -1;
+
         sem_lock(ipc.sem_id);
         if (ipc.st->fire_alarm) ok = 0;
         if (ipc.st->closing) ok = 0;
+
+        if (ok) {
+            ipc.st->revenue_total += (long long)req.value;
+            new_total = ipc.st->revenue_total;
+        }
         sem_unlock(ipc.sem_id);
 
-        log_line("cashier", "PAY_REQ from pid=%d group=%d table=%d -> %s",
-                 (int)req.pid, req.group_size, req.table_index, ok ? "OK" : "FAIL");
+        if (ok) {
+            log_line("cashier", "PAY_REQ pid=%d group=%d table=%d dish=%s amount=%d -> OK (revenue=%lld)",
+                     (int)req.pid, req.group_size, req.table_index, dish, req.value, new_total);
+        } else {
+            log_line("cashier", "PAY_REQ pid=%d group=%d table=%d dish=%s amount=%d -> FAIL",
+                     (int)req.pid, req.group_size, req.table_index, dish, req.value);
+        }
 
         Msg rep;
         memset(&rep, 0, sizeof(rep));

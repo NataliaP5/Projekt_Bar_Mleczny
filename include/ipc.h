@@ -39,6 +39,7 @@ typedef struct {
     int value;
     int group_size;
     int table_index;
+    int dish_id;
 } Msg;
 
 typedef struct {

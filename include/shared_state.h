@@ -21,5 +21,6 @@ typedef struct {
     int closing;
     int x3_boost_used;
     int dishes_returned_total;
+    long long revenue_total;
     int reserve_remaining;
 } SharedState;

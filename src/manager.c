@@ -165,6 +165,7 @@ static void snapshot_status(IPC *ipc,
                             int *out_res,
                             int *out_res_rem,
                             int *out_dishes,
+                            long long *out_revenue,
                             int *out_closing,
                             int *out_fire)
 {
@@ -183,6 +184,7 @@ static void snapshot_status(IPC *ipc,
 
     int res_rem = ipc->st->reserve_remaining;
     int dishes  = ipc->st->dishes_returned_total;
+    long long revenue = ipc->st->revenue_total;
     int closing = ipc->st->closing;
     int fire    = ipc->st->fire_alarm;
 
@@ -195,21 +197,23 @@ static void snapshot_status(IPC *ipc,
     *out_res = res;
     *out_res_rem = res_rem;
     *out_dishes = dishes;
+    *out_revenue = revenue;
     *out_closing = closing;
     *out_fire = fire;
 }
 
 static void print_final_status(IPC *ipc, const char *tag) {
     int tables, total, occ, pend, res, res_rem, dishes, closing, fire;
-    snapshot_status(ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &closing, &fire);
+    long long revenue;
+    snapshot_status(ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &revenue, &closing, &fire);
 
     log_line("manager",
-        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d",
-        tag, tables, total, occ, pend, res, res_rem, dishes, closing, fire);
+        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d revenue=%lld closing=%d fire=%d",
+        tag, tables, total, occ, pend, res, res_rem, dishes, revenue, closing, fire);
 
     term_printf(C_YEL,
-        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d\n",
-        tag, tables, total, occ, pend, res, res_rem, dishes, closing, fire);
+        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d revenue=%lld closing=%d fire=%d\n",
+        tag, tables, total, occ, pend, res, res_rem, dishes, revenue, closing, fire);
 }
 
 static void reap_nonblocking(IPC *ipc, ClientTrack *tracks, int n) {
@@ -354,6 +358,7 @@ int main(int argc, char **argv) {
     ipc.st->reserve_remaining = 0;
     ipc.st->fire_alarm = 0;
     ipc.st->closing = 0;
+    ipc.st->revenue_total = 0;
     sem_unlock(ipc.sem_id);
 
     log_line("manager", "Manager started pid=%d. Spawning worker+cashier.", (int)getpid());
@@ -431,11 +436,12 @@ int main(int argc, char **argv) {
 
         if (now - last_status >= 1000) {
             int tables, total, occ, pend, res, res_rem, dishes, closing, fire;
-            snapshot_status(&ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &closing, &fire);
+            long long revenue;
+            snapshot_status(&ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &revenue, &closing, &fire);
 
             term_printf(C_CYN,
-                "[STATUS] tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d closing=%d fire=%d\n",
-                tables, total, occ, pend, res, res_rem, dishes, closing, fire);
+                "[STATUS] tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d revenue=%lld closing=%d fire=%d\n",
+                tables, total, occ, pend, res, res_rem, dishes, revenue, closing, fire);
 
             last_status = now;
 

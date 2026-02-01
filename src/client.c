@@ -4,7 +4,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
-
+#include <stdlib.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <time.h>
@@ -64,7 +64,8 @@ static int wait_reply(IPC *ipc, long mytype, int expected_kind, Msg *out) {
     return 0;
 }
 
-static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount) {
+
+static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount, int dish_id) {
     Msg m;
     memset(&m, 0, sizeof(m));
     m.mtype = MTYPE_CASHIER;
@@ -73,6 +74,7 @@ static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount
     m.group_size = group;
     m.table_index = table;
     m.value = amount;
+    m.dish_id = dish_id;
 
     if (msgsnd(ipc->msg_id, &m, msgsz(), 0) == -1) {
         perror("client msgsnd PAY_REQ");
@@ -102,6 +104,30 @@ static int send_serve_request(IPC *ipc, pid_t me, int group, int table) {
     if (!wait_reply(ipc, (long)me, MSG_SERVE_REPLY, &rep)) return 0;
     return rep.value != 0;
 }
+
+typedef struct {
+    const char *name;
+    int price;
+} MenuItem;
+
+static const MenuItem menu[] = {
+    {"Pierogi ruskie", 18},
+    {"Nalesniki z serem", 12},
+    {"Kotlet schabowy", 22},
+    {"Rosol", 10},
+    {"Pomidorowka", 14}
+};
+
+static int pick_menu_id(int client_id) {
+    unsigned int seed =
+        (unsigned int)time(NULL) ^
+        (unsigned int)getpid() ^
+        (unsigned int)(client_id * 1103515245u);
+
+    int n = (int)(sizeof(menu) / sizeof(menu[0]));
+    return (int)(rand_r(&seed) % (unsigned)n);
+}
+
 
 typedef struct {
     int group_size;
@@ -284,6 +310,9 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    int dish_id = pick_menu_id(id);
+    MenuItem item = menu[dish_id];
+    int amount = item.price * group;
     long long seat_deadline = now_ms() + WAIT_SEAT_TIMEOUT_MS;
     while (!g_stop) {
         int picked = pick_table_and_reserve(&ipc, group, &table);
@@ -313,9 +342,11 @@ int main(int argc, char **argv) {
     }
 
     log_line("client", "Client %d group=%d reserved table=%d (pending)", id, group, table);
+    log_line("client", "Client %d: ordered '%s' price=%d per person (group=%d total=%d)",
+             id, item.name, item.price, group, amount);
     notify_manager(&ipc, MSG_CLIENT_PENDING, me, group, table, 0);
 
-    if (!send_pay_request(&ipc, me, group, table, 10 * group) || g_stop) {
+    if (!send_pay_request(&ipc, me, group, table, amount, dish_id) || g_stop) {
         int fire = is_fire_now(&ipc);
         if (fire) log_line("client", "Client %d PAY interrupted by FIRE -> cancel pending", id);
         else      log_line("client", "Client %d PAY interrupted/failed -> cancel pending", id);
