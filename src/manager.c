@@ -226,6 +226,19 @@ static void reap_nonblocking(IPC *ipc, ClientTrack *tracks, int n) {
     }
 }
 
+static int count_alive_clients(pid_t *pids, int n) {
+    int alive = 0;
+    for (int i = 0; i < n; i++) {
+        if (pids[i] <= 0) continue;
+        if (kill(pids[i], 0) == 0) {
+            alive++;
+        } else if (errno == EPERM) {
+            alive++;
+        }
+    }
+    return alive;
+}
+
 static void stop_pid(IPC *ipc, ClientTrack *tracks, int n,
                      pid_t pid, const char *name, int grace_ms) {
     if (pid <= 0) return;
@@ -293,6 +306,18 @@ int main(int argc, char **argv) {
     int arr_min = (argc >= 8) ? parse_int(argv[7], 0, 60000, "ARR_MIN_MS") : 60;
     int arr_max = (argc >= 9) ? parse_int(argv[8], 0, 60000, "ARR_MAX_MS") : 200;
     int seed_arg = (argc >= 10) ? parse_int(argv[9], 0, 2147483647, "SEED") : -1;
+
+    #define MAX_CLIENT_PROCS 6000
+
+    if (clients > 0 && clients > MAX_CLIENT_PROCS) {
+        fprintf(stderr,
+            "[WARN] Requested %d clients, but max supported is %d. Capping.\n",
+            clients, MAX_CLIENT_PROCS);
+        log_line("manager", "WARN: Requested %d clients, capping to %d",
+                 clients, MAX_CLIENT_PROCS);
+        clients = MAX_CLIENT_PROCS;
+    }
+
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -393,17 +418,13 @@ int main(int argc, char **argv) {
             close_started = 1;
             stop_spawning = 1;
 
-            sem_lock(ipc.sem_id);
-            ipc.st->closing = 1;
-            sem_unlock(ipc.sem_id);
-
-            drain_deadline = now_ms() + DRAIN_TIMEOUT_MS;
+            drain_deadline = now_ms() + 60000;
             last_progress_at = now_ms();
             last_occ = -1;
             last_pend = -1;
 
             print_final_status(&ipc, "CLOSE_STARTED_STATUS (LIMIT_REACHED)");
-            term_printf(C_YEL, "[CLOSE] limit reached: stop spawning, draining (timeout=%dms)\n", DRAIN_TIMEOUT_MS);
+            term_printf(C_YEL, "[CLOSE] limit reached: stop spawning, draining (timeout=60000ms)\n");
         }
 
         long long now = now_ms();
@@ -427,12 +448,17 @@ int main(int argc, char **argv) {
             }
 
             if (close_started && occ == 0 && pend == 0) {
-                term_printf(C_YEL, "[CLOSE] drain complete (bar empty)\n");
-                print_final_status(&ipc, "FINAL_STATUS (END)");
-                break;
+                int alive = count_alive_clients(client_pids, spawned);
+                if (alive == 0) {
+                    term_printf(C_YEL, "[CLOSE] drain complete (bar empty, all clients exited)\n");
+                    print_final_status(&ipc, "FINAL_STATUS (END)");
+                    break;
+                } else {
+                    term_printf(C_YEL, "[CLOSE] bar empty, but %d client processes still alive -> waiting\n", alive);
+                }
             }
 
-            if (close_started && (occ > 0 || pend > 0) &&
+            if (close_started && closing == 1 && (occ > 0 || pend > 0) &&
                 last_progress_at > 0 && (now - last_progress_at) >= DRAIN_NO_PROGRESS_MS) {
 
                 term_printf(C_YEL, "[CLOSE] no progress for %dms -> terminate clients (SIGTERM)\n",
@@ -464,7 +490,15 @@ int main(int argc, char **argv) {
             if (spawned < (int)(sizeof(client_pids)/sizeof(client_pids[0]))) {
                 char idbuf[32];
                 snprintf(idbuf, sizeof(idbuf), "%d", i);
-                pid_t cpid = spawn("./bin/client", idbuf);
+                pid_t cpid = fork();
+                if (cpid == -1) {
+                    fprintf(stderr, "[WARN] fork() failed at i=%d: %s. Stop spawning.\n", i, strerror(errno));
+                    log_line("manager", "WARN: fork failed at i=%d: %s. Stop spawning.", i, strerror(errno));
+                    stop_spawning = 1;
+                } else if (cpid == 0) {
+                    execl("./bin/client", "./bin/client", idbuf, (char*)NULL);
+                    _exit(127);
+                }
 
                 client_pids[spawned] = cpid;
                 tracks[spawned].pid = cpid;
