@@ -522,7 +522,23 @@ int main(int argc, char **argv) {
                 if (cpid == -1) {
                     fprintf(stderr, "[WARN] fork() failed at i=%d: %s. Stop spawning.\n", i, strerror(errno));
                     log_line("manager", "WARN: fork failed at i=%d: %s. Stop spawning.", i, strerror(errno));
+
                     stop_spawning = 1;
+
+                    if (!close_started) {
+                        close_started = 1;
+
+                        drain_deadline = now_ms() + 60000;
+                        last_progress_at = now_ms();
+                        last_occ = -1;
+                        last_pend = -1;
+
+                        print_final_status(&ipc, "CLOSE_STARTED_STATUS (FORK_FAILED)");
+                        term_printf(C_YEL, "[CLOSE] fork failed: stop spawning, draining (timeout=60000ms)\n");
+                    }
+
+                    next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
+                    continue;
                 } else if (cpid == 0) {
                     execl("./bin/client", "./bin/client", idbuf, (char*)NULL);
                     _exit(127);
