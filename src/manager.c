@@ -19,7 +19,8 @@ static volatile sig_atomic_t g_usr1  = 0;
 static volatile sig_atomic_t g_usr2  = 0;
 static volatile sig_atomic_t g_fire  = 0;
 static volatile sig_atomic_t g_close = 0;
-
+static volatile sig_atomic_t g_tstp = 0;
+static void on_tstp(int sig){ (void)sig; g_tstp = 1; }
 static void on_usr1(int sig){ (void)sig; g_usr1 = 1; }
 static void on_usr2(int sig){ (void)sig; g_usr2 = 1; }
 static void on_fire(int sig){ (void)sig; g_fire = 1; }
@@ -335,6 +336,8 @@ int main(int argc, char **argv) {
     if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
     sa.sa_handler = on_close;
     if (sigaction(SIGINT,  &sa, NULL) == -1) DIE_PERROR("sigaction SIGINT");
+    sa.sa_handler = on_tstp;
+    if (sigaction(SIGTSTP, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTSTP");
 
     unsigned int seed;
     if (seed_arg >= 0) seed = (unsigned int)seed_arg;
@@ -400,6 +403,23 @@ int main(int argc, char **argv) {
 
         drain_manager_msgs(&ipc, tracks, spawned, reserve_target);
         reap_nonblocking(&ipc, tracks, spawned);
+
+        if (g_tstp) {
+            g_tstp = 0;
+
+            if (worker > 0) kill(worker, SIGSTOP);
+            if (cashier > 0) kill(cashier, SIGSTOP);
+            for (int k = 0; k < spawned; k++) {
+                if (client_pids[k] > 0) kill(client_pids[k], SIGSTOP);
+            }
+
+            reap_nonblocking(&ipc, tracks, spawned);
+            reap_nonblocking(&ipc, tracks, spawned);
+
+            log_line("manager", "SIGTSTP: paused (SIGSTOP children, reaped exits)");
+
+            kill(getpid(), SIGSTOP);
+        }
 
         if (g_close && !close_started) {
             g_close = 0;
