@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 
 static int g_fd = -1;
+static int g_atexit_registered = 0;
 
 void ensure_log_dir(void) {
     struct stat st;
@@ -42,6 +43,11 @@ void log_line(const char *role, const char *fmt, ...) {
         if (g_fd == -1) DIE_PERROR("open log file");
     }
 
+    if (!g_atexit_registered) {
+        g_atexit_registered = 1;
+        atexit(log_close);
+    }
+
     char msg[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -55,6 +61,13 @@ void log_line(const char *role, const char *fmt, ...) {
         if (write(g_fd, line, (size_t)n) == -1) {
             perror("write log");
         }
+    }
+}
+
+void log_close(void) {
+    if (g_fd != -1) {
+        if (close(g_fd) == -1) perror("close log file");
+        g_fd = -1;
     }
 }
 

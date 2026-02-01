@@ -25,3 +25,4 @@ void sleep_ms(int ms);
 
 void ensure_log_dir(void);
 void log_line(const char *who, const char *fmt, ...);
+void log_close(void);

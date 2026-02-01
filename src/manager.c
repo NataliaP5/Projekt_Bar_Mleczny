@@ -561,6 +561,7 @@ int main(int argc, char **argv) {
                     continue;
                 } else if (cpid == 0) {
                     execl("./bin/client", "./bin/client", idbuf, (char*)NULL);
+                    perror("exec client");
                     _exit(127);
                 }
 

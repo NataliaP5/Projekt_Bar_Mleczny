@@ -14,9 +14,15 @@ static key_t make_key(const char *keyfile, int proj) {
     return k;
 }
 
-bool ipc_create(IPC *ipc, const char *keyfile) {
-    memset(ipc, 0, sizeof(*ipc));
+static void ipc_reset(IPC *ipc) {
+    ipc->shm_id = -1;
+    ipc->sem_id = -1;
+    ipc->msg_id = -1;
+    ipc->st = NULL;
+}
 
+bool ipc_create(IPC *ipc, const char *keyfile) {
+    ipc_reset(ipc);
     key_t k_shm = make_key(keyfile, 0x43);
     key_t k_sem = make_key(keyfile, 0x44);
     key_t k_msg = make_key(keyfile, 0x45);
@@ -54,7 +60,7 @@ bool ipc_create(IPC *ipc, const char *keyfile) {
 }
 
 bool ipc_open(IPC *ipc, const char *keyfile) {
-    memset(ipc, 0, sizeof(*ipc));
+    ipc_reset(ipc);
 
     key_t k_shm = make_key(keyfile, 0x43);
     key_t k_sem = make_key(keyfile, 0x44);
@@ -82,13 +88,13 @@ void ipc_close(IPC *ipc) {
 }
 
 void ipc_destroy(IPC *ipc) {
-    if (ipc->msg_id > 0) {
+    if (ipc->msg_id >= 0) {
         if (msgctl(ipc->msg_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID");
     }
-    if (ipc->shm_id > 0) {
+    if (ipc->shm_id >= 0) {
         if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID");
     }
-    if (ipc->sem_id > 0) {
+    if (ipc->sem_id >= 0) {
         if (semctl(ipc->sem_id, 0, IPC_RMID) == -1) perror("semctl IPC_RMID");
     }
 }
