@@ -311,7 +311,7 @@ int main(int argc, char **argv) {
     int arr_max = (argc >= 9) ? parse_int(argv[8], 0, 60000, "ARR_MAX_MS") : 200;
     int seed_arg = (argc >= 10) ? parse_int(argv[9], 0, 2147483647, "SEED") : -1;
 
-    #define MAX_CLIENT_PROCS 6000
+    #define MAX_CLIENT_PROCS 10000
 
     if (clients > 0 && clients > MAX_CLIENT_PROCS) {
         fprintf(stderr,
@@ -366,8 +366,8 @@ int main(int argc, char **argv) {
     pid_t worker = spawn("./bin/worker", NULL);
     pid_t cashier = spawn("./bin/cashier", NULL);
 
-    pid_t client_pids[6000];
-    ClientTrack tracks[6000];
+    pid_t client_pids[MAX_CLIENT_PROCS];
+    ClientTrack tracks[MAX_CLIENT_PROCS];
     int spawned = 0;
 
     int i = 1;
@@ -493,9 +493,31 @@ int main(int argc, char **argv) {
         }
 
         if (!stop_spawning && now >= next_spawn_at) {
-            if (spawned < (int)(sizeof(client_pids)/sizeof(client_pids[0]))) {
+
+            int cap = (int)(sizeof(client_pids)/sizeof(client_pids[0]));
+
+            if (spawned >= cap) {
+                stop_spawning = 1;
+
+                if (!close_started && clients == 0) {
+                    close_started = 1;
+
+                    drain_deadline = now_ms() + 60000;
+                    last_progress_at = now_ms();
+                    last_occ = -1;
+                    last_pend = -1;
+
+                    print_final_status(&ipc, "CLOSE_STARTED_STATUS (MAX_CLIENT_PROCS_REACHED)");
+                    term_printf(C_YEL,
+                        "[CLOSE] max client procs reached (%d): stop spawning, draining (timeout=%dms)\n",
+                        cap, 60000);
+                }
+
+                next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
+            } else {
                 char idbuf[32];
                 snprintf(idbuf, sizeof(idbuf), "%d", i);
+
                 pid_t cpid = fork();
                 if (cpid == -1) {
                     fprintf(stderr, "[WARN] fork() failed at i=%d: %s. Stop spawning.\n", i, strerror(errno));
@@ -514,9 +536,10 @@ int main(int argc, char **argv) {
                 spawned++;
 
                 log_line("manager", "Spawned client %d pid=%d", i, (int)cpid);
+
+                i++;
+                next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
             }
-            i++;
-            next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
         }
 
         if (now - last_tick >= 200) {
