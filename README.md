@@ -32,24 +32,20 @@ Przy jednym stoliku może siedzieć jedna grupa lub kilka grup, ale jedynie wted
 Po zakończeniu jedzenia naczynia zwracane są albo przez każdego klienta z osobna, albo przez jedną osobę w imieniu całej grupy.
 
 # 3. Role procesów
-Klient (grupa znajomych): Pojawia się w losowej chwili, decyduje o złożeniu zamówienia, przechodzi przez kasę, zajmuje stolik (jeśli jest dostępny), spożywa posiłek, oddaje naczynia i wychodzi.
 
-Kasjer: Obsługuje płatności, rejestruje zamówienia i potwierdza zapłatę. Informacja o opłaconym zamówieniu pozwala klientowi odebrać posiłek i rozpocząć proces zajmowania miejsca.
+**Klient (grupa znajomych)**
+Pojawia się po losowym czasie. Każdy proces klienta reprezentuje jedną grupę (1-3 osoby). Klient losowo decyduje, czy składa zamówienie (ok. 5% przypadków - brak zamówienia i natychmiastowe wyjście). Jeśli składa zamówienie, działa zgodnie z zasadą „nie czekamy z gorącym daniem”: najpierw próbuje zarezerwować miejsce/stolik (stan pending), a dopiero po udanej rezerwacji przechodzi przez kasę (żądanie płatności) i następnie wysyła prośbę o wydanie dania do pracownika. Po odebraniu posiłku aktywuje zajęcie miejsca (seated). Po posiłku kończy „jedzenie”, zwraca naczynia (indywidualnie lub zbiorczo) i opuszcza lokal, zwalniając zajęte miejsca.
 
-Pracownik obsługi: Wydaje dania, prowadzi „plan stolików” (zajęte/wolne/zarezerwowane), pilnuje limitu N oraz zasad łączenia grup przy jednym stole. Reaguje też na decyzje kierownika (zmiana liczby stolików, rezerwacje, ewakuacja).
+**Kasjer**
+Odpowiada za obsługę płatności i potwierdzanie opłacenia zamówienia. Odbiera z kolejki komunikatów żądania płatności od klientów, realizuje płatność (nalicza wartość) i odsyła odpowiedź. Dzięki temu klient nie może przejść do etapu wydania posiłku bez pozytywnego potwierdzenia z kasy.
 
-Kierownik baru: Nadzoruje całość i steruje zachowaniem systemu za pomocą sygnałów.
+**Pracownik obsługi (worker)**
+Odpowiada za wydawanie posiłków po potwierdzeniu płatności oraz za logikę dotyczącą sali: przydział stolików, kontrolę pojemności oraz regułę współdzielenia stolika tylko przez równoliczne grupy. Operuje na stanie w pamięci dzielonej (zajętość stolików, rezerwacje/pending, liczniki), a dostęp do sekcji krytycznych jest synchronizowany semaforami. Worker obsługuje również polecenia kierownika: jednorazowe zwiększenie liczby stolików 3-osobowych (SIGUSR1) oraz rezerwacje miejsc (SIGUSR2 - handshake z managerem i stopniowe "dociąganie" rezerwacji, gdy zwalniają się miejsca).
 
-# 4. IPC i wymagania formalne
-W projekcie zastosowano mechanizmy systemowe do komunikacji i synchronizacji procesów (co najmniej dwa różne mechanizmy IPC oraz semafory do ochrony sekcji krytycznych), zgodnie z wymaganiami.
+**Kierownik baru (manager)**
+Inicjalizuje i usuwa zasoby IPC (pamięć dzielona, semafory, kolejka komunikatów), uruchamia procesy kasjera i workera oraz generuje procesy klientów. Nadzoruje przebieg symulacji (cyklicznie raportuje stan: liczba stolików, miejsca zajęte i pending, liczba miejsc zarezerwowanych, liczba naczyń, przychód). Steruje zachowaniem systemu sygnałami.
 
-Dodatkowo spełniono wymagania formalne:
-- ustawienie minimalnych praw dostępu do struktur IPC, 
-- usuwanie struktur IPC po zakończeniu działania, 
-- obsługa błędów funkcji systemowych (perror() + errno), 
-- unikanie rozwiązań scentralizowanych oraz obowiązkowe użycie fork() i exec(). 
-
-# 5. Sygnały sterujące
+# 4. Sygnały sterujące
 Zaimplementowano zachowania sterowane sygnałami zgodnie z opisem tematu:
 
 Sygnał 1: jednorazowo możliwe jest dwukrotne zwiększenie liczby stolików 3-osobowych (X3) - operacja może zajść tylko raz.
@@ -58,10 +54,213 @@ Sygnał 2: kierownik żąda rezerwacji określonej liczby miejsc/stolików, któ
 
 Sygnał 3 (pożar): klienci natychmiast opuszczają lokal, zostawiając naczynia; następnie po wyjściu klientów pracę kończy obsługa i zamykana jest kasa.
 
+# 5. IPC i wymagania formalne
+W projekcie zastosowano mechanizmy systemowe do komunikacji i synchronizacji procesów (co najmniej dwa różne mechanizmy IPC oraz semafory do ochrony sekcji krytycznych), zgodnie z wymaganiami.
+
+Dodatkowo spełniono wymagania formalne:
+- ustawienie minimalnych praw dostępu do struktur IPC, 
+- usuwanie struktur IPC po zakończeniu działania, 
+- obsługa błędów funkcji systemowych (perror() + errno), 
+- unikanie rozwiązań scentralizowanych oraz obowiązkowe użycie fork() i exec(). 
+
 # 6. Raportowanie przebiegu symulacji
 Przebieg symulacji jest zapisywany do plików tekstowych (chronologiczny zapis zdarzeń: przyjście klienta, zamówienie, płatność, zajęcie/zwolnienie stolika, wyjście; dodatkowo obsługa sygnałów i ewakuacji).
 
-# 7. Testy
+# 7. Uruchomienie
+
+Budowanie:
+- make
+
+Czyszczenie i pełna przebudowa (opcjonalnie):
+- make clean && make
+  
+Przykładowe uruchomienie (z Makefile):
+- make run
+albo bezpośrednio:
+./bin/manager 2 2 2 1 200 4 60 200
+
+Program przyjmuje argumenty: X1 X2 X3 X4 CLIENTS RESERVESEATS ARR_MIN_MS ARR_MAX_MS [SEED]
+
+Opis argumentów:
+- X1 X2 X3 X4 - liczby stolików 1/2/3/4-osobowych (wymagane, zakres 0..100)
+- CLIENTS - liczba procesów klientów (opcjonalne, domyślnie 120)
+  - CLIENTS=0 - tryb ciągły (program działa aż do przerwania)
+  - program ogranicza do 10000
+- RESERVESEATS - liczba miejsc do rezerwacji po sygnale SIGUSR2 (opcjonalne, domyślnie -1, zakres -1..2000)
+   - gdy RESERVESEATS > 0 - po SIGUSR2 rezerwuje automatycznie tyle miejsc
+   - gdy RESERVESEATS <= 0 - po SIGUSR2 manager pyta w terminalu o liczbę miejsc (0..2000)
+- ARR_MIN_MS - minimalny czas między pojawianiem się klientów w ms (opcjonalne, 0..60000), domyślnie 60
+- ARR_MAX_MS - maksymalny czas między pojawianiem się klientów w ms (opcjonalne, 0..60000), domyślnie 200
+- SEED - ziarno losowości (opcjonalne, 0..2147483647) - jeśli nie podano, seed jest ustawiany automatycznie na podstawie czasu i PID
+
+Sterowanie w trakcie działania:
+- Ctrl+C (SIGINT) - normalne zamykanie (program kończy w kontrolowany sposób)
+- SIGTERM - tryb „pożar” (natychmiastowa ewakuacja)
+- SIGUSR1 - jednorazowe podwojenie liczby stolików 3-os.
+- SIGUSR2 - rezerwacja miejsc (liczba wg RESERVESEATS albo pytanie w terminalu)
+
+# 8. Pseudokody:
+
+**8.1 Szukanie stolika + rezerwacja „pending”:**
+```text
+FUNKCJA: SZUKAJ_I_REZERWUJ_STOLIK(group_size) -> foundTable albo -1
+
+[ZABLOKUJ mutex stanu sali]
+
+JEŻELI lokal jest zamykany LUB trwa pożar:
+    [ODBLOKUJ mutex]
+    ZWRÓĆ -1
+
+bestTable = -1
+bestWaste = bardzo_dużo
+
+DLA KAŻDEGO stolika t:
+    // 1) stolik musi mieć pojemność
+    JEŻELI t.pojemnosc == 0:
+        POMIŃ
+
+    // 2) zasada równolicznych grup:
+    // jeśli przy stoliku „ustalono” rozmiar grupy, nowa grupa musi być taka sama
+    JEŻELI t.dozwolonyRozmiarGrupy != 0 ORAZ t.dozwolonyRozmiarGrupy != group_size:
+        POMIŃ
+
+    // 3) oblicz wolne miejsca
+    wolne = t.pojemnosc - (t.zajete + t.pending + t.zarezerwowanePrzezManagera)
+    JEŻELI wolne < group_size:
+        POMIŃ
+
+    // 4) wybór „najlepszego” stolika: minimalizujemy „marnowanie” miejsc
+    waste = wolne - group_size
+    JEŻELI waste < bestWaste:
+        bestWaste = waste
+        bestTable = t.ID
+
+        JEŻELI waste == 0:
+            PRZERWIJ (idealne dopasowanie)
+
+JEŻELI bestTable != -1:
+    // rezerwacja „pending” = miejsce jest „zaklepane”, ale grupa jeszcze nie siedzi
+    t(bestTable).pending += group_size
+
+    JEŻELI t(bestTable).dozwolonyRozmiarGrupy == 0:
+        t(bestTable).dozwolonyRozmiarGrupy = group_size
+
+[ODBLOKUJ mutex]
+ZWRÓĆ bestTable
+```
+**8.2 Klient - logika „pending → pay → serve → seated”:**
+```text
+START KLIENTA:
+  Wylosuj czas przyjścia
+  Poczekaj ten czas
+
+  group_size = 1..3 (zależnie od ID klienta)
+  JEŻELI klient należy do ~5% bez zamówienia:
+      Zapisz „no order” i ZAKOŃCZ
+
+  // KROK 1: zdobądź miejsce zanim pójdziesz po gorące danie
+  deadline = teraz + 8000 ms
+  foundTable = -1
+
+  DOPÓKI foundTable == -1 ORAZ teraz < deadline:
+      foundTable = SZUKAJ_I_REZERWUJ_STOLIK(group_size)
+
+      JEŻELI foundTable == -1:
+          CZEKAJ na „zdarzenie stolikowe” (ktoś zwolnił miejsce) maksymalnie do deadline
+
+  JEŻELI foundTable == -1:
+      Zapisz „left (no seat after 8000ms)” i ZAKOŃCZ
+
+  Zapisz „reserved (pending)”
+  Powiadom managera: „klient pending”
+
+  // KROK 2: płatność
+  Wyślij do kasjera prośbę o płatność i CZEKAJ na odpowiedź
+  JEŻELI płatność nieudana LUB przerwana (zamknięcie/pożar):
+      ANULUJ pending na stoliku
+      Powiadom managera: „klient wychodzi”
+      ZAKOŃCZ
+
+  // KROK 3: wydanie dania
+  Wyślij do pracownika prośbę o wydanie i CZEKAJ na odpowiedź
+  JEŻELI wydanie nieudane LUB przerwane:
+      ANULUJ pending na stoliku
+      Powiadom managera: „klient wychodzi”
+      ZAKOŃCZ
+
+  // KROK 4: klient siada (pending -> occupied)
+  [ZABLOKUJ mutex]
+  t(foundTable).pending  -= group_size
+  t(foundTable).zajete   += group_size
+  [ODBLOKUJ mutex]
+
+  Powiadom managera: „klient seated”
+  Jedz (wątki: po 1 na osobę)
+
+  JEŻELI pożar:
+      Zapisz „left dishes”
+  INACZEJ:
+      Zwróć naczynia (losowo: zbiorczo albo pojedynczo)
+
+  // KROK 5: wyjście i zwolnienie miejsc
+  [ZABLOKUJ mutex]
+  t(foundTable).zajete -= group_size
+  JEŻELI t(foundTable).zajete == 0 ORAZ t(foundTable).pending == 0:
+      t(foundTable).dozwolonyRozmiarGrupy = 0
+  [ODBLOKUJ mutex]
+
+  Wyślij „zdarzenie stolikowe” (obudź czekających)
+  Powiadom managera: „klient wyszedł”
+  ZAKOŃCZ
+```
+
+**8.3 Pracownik - wydanie dania + zwrot naczyń:**
+```text
+PĘTLA PRACOWNIKA:
+  DOPÓKI pracownik nie jest zatrzymywany:
+      Odbierz wiadomość
+
+      JEŻELI to prośba o wydanie dania:
+          ok = PRAWDA
+          [ZABLOKUJ mutex]
+          JEŻELI wskazany stolik nie istnieje: ok = FAŁSZ
+          JEŻELI na stoliku nie ma pending dla tej grupy: ok = FAŁSZ
+          JEŻELI pożar LUB zamykanie: ok = FAŁSZ
+          [ODBLOKUJ mutex]
+          Odeślij odpowiedź do klienta: ok/nie ok
+
+      JEŻELI to zwrot naczyń:
+          [ZABLOKUJ mutex]
+          zwiększ licznik zwróconych naczyń o podaną liczbę
+          [ODBLOKUJ mutex]
+```
+
+**8.4 SIGUSR2 - rezerwacja miejsc (ustalenie liczby + rezerwowanie w czasie):**
+```text
+MANAGER po SIGUSR2:
+  Przekaż sygnał do pracownika
+
+PRACOWNIK po SIGUSR2:
+  Poproś managera: „ile miejsc rezerwujemy?”
+
+MANAGER:
+  Ustal liczbę miejsc:
+    - jeśli podana w parametrach → użyj
+    - inaczej → zapytaj w terminalu
+  Zwiększ licznik „pozostało do zarezerwowania”
+  Wyślij do pracownika start rezerwacji
+
+DOPÓKI „pozostało do zarezerwowania” > 0:
+  Co pewien czas wyślij do pracownika „tick”
+
+PRACOWNIK po tick:
+  [ZABLOKUJ mutex]
+  Zarezerwuj tyle miejsc, ile aktualnie jest możliwe (po 1 miejscu)
+  Zmniejsz „pozostało do zarezerwowania”
+  [ODBLOKUJ mutex]
+```
+
+# 9. Testy
 
 **Test 1 - Skrajne obiążenie**
 
@@ -186,7 +385,7 @@ Opis: Wysłanie sygnału 2, ustalenie liczby rezerwowanych miejsc i obserwowacja
 
 Wnioski: Zarezerwowane miejsca/stoliki nie są przydzielane zwykłym klientom oraz spada dostępna pojemność sali. Gdyby w danym momencie nie było tyle wolnych miejsc ile chce się zarezerwować, to rezerwacja oczekuje aż miejsce się zwolni i dokłada je do rezerwacji. TEST ZDANY
 
-**Test 6 – Sygnał 3: pożar i ewakuacja**
+**Test 6 - Sygnał 3: pożar i ewakuacja**
 
 Cel: Weryfikacja natychmiastowego opuszczenia lokalu przez klientów i poprawnego zamknięcia pracy obsługi/kasy.
 
@@ -220,26 +419,32 @@ FINAL_STATUS (FIRE) tables=6 seats=14 occ=12 pend=0 res=0 reserve_remaining=0 di
 
 Wnioski: Klienci kończą natychmiast i zostawiają naczynia, po wyjściu klientów kończą pracownicy obsługi i kasa. TEST ZDANY
 
-# 8. Uruchomienie
-Budowanie:
-- make
+# 10. Problemy, wnioski
 
-Przykładowe uruchomienie (z Makefile):
-- make run
-albo bezpośrednio:
-./bin/manager 2 2 2 1 200 4 60 200
+- Synchronizacja pamięci dzielonej i unikanie wyścigów - aktualizacje zajętości stolików musiały być atomowe. Zastosowano semafor-mutex oraz rozdzielenie stanu na pending_seats (rezerwacja w trakcie) i occupied_seats (realnie zajęte), żeby uniknąć sytuacji, w której dwa procesy „przydzielą” to samo miejsce.
+- Czekanie na miejsce bez busy-waitingu - zamiast aktywnego odpytywania, klienci oczekują na zdarzenia stolikowe na semaforze zdarzeniowym z limitem czasu (timeout). Dzięki temu program jest stabilny przy dużym obciążeniu.
+- EINTR i przerwane wywołania systemowe - blokujące operacje (np. msgrcv, semop, waitpid, operacje na plikach) mogą być przerywane przez sygnały; w kodzie uwzględniono obsługę errno == EINTR, aby procesy kontynuowały pracę poprawnie.
+- Koordynacja zakończenia symulacji i sprzątanie IPC - po zakończeniu (lub pożarze) trzeba było zagwarantować, że procesy potomne kończą pracę, a zasoby SysV IPC są usuwane z systemu. Zadbano o kolejność kończenia procesów oraz IPC_RMID dla zasobów.
 
-Program przyjmuje argumenty: X1 X2 X3 X4 CLIENTS RESERVESEATS ARR_MIN_MS ARR_MAX_MS [SEED]
+Wnioski: Systemy wieloprocesowe z SysV IPC wymagają bardzo ostrożnej synchronizacji (mutex + jasno zdefiniowane stany pośrednie), obsługi sytuacji wyjątkowych (sygnały, EINTR) oraz konsekwentnego sprzątania zasobów. Dobre logowanie znacząco ułatwia debugowanie i weryfikację poprawności.
 
-X1 X2 X3 X4 - liczby stolików 1/2/3/4-os.
+# 11. Elementy dodatkowe
 
-kolejne parametry: liczba klientów, rezerwacje, minimalny/maksymalny czas przyjścia (ms), SEED opcjonalny.
+Poniższe elementy są ponad minimum opisu tematu i służą zwiększeniu stabilności/testowalności lub czytelności działania symulacji („wyróżniające elementy”):
 
-# 9. Problemy, wnioski
+- Szczegółowe logowanie per-proces - osobne pliki logs/*.log dla managera/worker/cashier/klientów z timestampami i zdarzeniami (ułatwia analizę przebiegu i dowodzenie testów).
 
-# 10. Elementy dodatkowe
+- Cykliczny status managera oraz kolorowanie wyjścia terminala - okresowo wypisywane podsumowanie stanu (tables, seats, occ, pend, res, reserve_remaining, dishes, revenue, fire) pozwala szybko ocenić, czy system się nie „zatrzymał” oraz jak sygnały wpływają na symulację.
+  <img width="1166" height="300" alt="image" src="https://github.com/user-attachments/assets/713ae083-6b6f-4de7-823d-8592a431b434" />
 
-# 11. Permalinki do kluczowych fragmentów kodu
+
+- Reprodukowalność poprzez seed - możliwość ustawienia ziarna losowości (stabilniejsze testowanie i porównywanie wyników).
+
+- Oczekiwanie z limitem czasu zamiast aktywnego odpytywania - klient nie „kręci się w pętli”, tylko czeka na zdarzenia z timeoutem (co ogranicza obciążenie CPU i poprawia stabilność przy dużej liczbie klientów).
+
+- Dwa tryby rezerwacji (SIGUSR2) - rezerwacja może być zadana parametrem uruchomienia albo interaktywnie po sygnale (handshake worker–manager), co ułatwia demonstrację na prezentacji i w testach.
+
+# 12. Permalinki do kluczowych fragmentów kodu
 
 - `fork()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L132-L140 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L541-L566
 - `execl()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L136-L137 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L563
