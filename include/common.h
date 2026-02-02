@@ -1,3 +1,6 @@
+// Wspolne funkcje pomocnicze uzywane przez wszystkie procesy:
+// - parsowanie argumentow, odmierzanie czasu, uspienie z obluga EINTR
+// - logowanie do plikow
 #pragma once
 #include <stdio.h>
 #include <stdlib.h>
