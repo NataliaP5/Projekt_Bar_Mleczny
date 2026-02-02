@@ -14,6 +14,7 @@ static key_t make_key(const char *keyfile, int proj) {
     return k;
 }
 
+// Zerowanie uchwytow - ulatwia sprzatanie w razie bledow
 static void ipc_reset(IPC *ipc) {
     ipc->shm_id = -1;
     ipc->sem_id = -1;
@@ -21,6 +22,7 @@ static void ipc_reset(IPC *ipc) {
     ipc->st = NULL;
 }
 
+// Tworzy zasoby IPC, w razie niepowodzenia robi rollback
 bool ipc_create(IPC *ipc, const char *keyfile) {
     ipc_reset(ipc);
     key_t k_shm = make_key(keyfile, 0x43);
@@ -45,13 +47,15 @@ bool ipc_create(IPC *ipc, const char *keyfile) {
         return false;
     }
 
+    // Podlaczenie pamieci dzielonej i inicjalizacja na zero
     ipc->st = (SharedState*)shmat(ipc->shm_id, NULL, 0);
     if (ipc->st == (void*)-1) DIE_PERROR("shmat");
 
+    // Inicjalizacja semaforow
     union semun su;
-    su.val = 1;
+    su.val = 1; // odblokowany
     if (semctl(ipc->sem_id, SEM_MUTEX, SETVAL, su) == -1) DIE_PERROR("semctl SETVAL");
-    su.val = 0;
+    su.val = 0; // brak zdarzen na starcie
     if (semctl(ipc->sem_id, SEM_TABLE_EVENT, SETVAL, su) == -1)
         DIE_PERROR("semctl SETVAL TABLE_EVENT");
 
@@ -59,6 +63,7 @@ bool ipc_create(IPC *ipc, const char *keyfile) {
     return true;
 }
 
+// Otwiera istniejace IPC
 bool ipc_open(IPC *ipc, const char *keyfile) {
     ipc_reset(ipc);
 
@@ -80,6 +85,7 @@ bool ipc_open(IPC *ipc, const char *keyfile) {
     return true;
 }
 
+// Odlacza proces od pamieci dzielonej, nie usuwa zasobow IPC
 void ipc_close(IPC *ipc) {
     if (ipc->st && ipc->st != (void*)-1) {
         if (shmdt(ipc->st) == -1) perror("shmdt");
@@ -87,6 +93,7 @@ void ipc_close(IPC *ipc) {
     ipc->st = NULL;
 }
 
+// Usuwa zasoby IPC z systemu
 void ipc_destroy(IPC *ipc) {
     if (ipc->msg_id >= 0) {
         if (msgctl(ipc->msg_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID");
@@ -99,6 +106,8 @@ void ipc_destroy(IPC *ipc) {
     }
 }
 
+// Wejscie do sekcji krytycznej (mutex na semaforze SysV)
+// Obsluga EINTR - jesli semop przerwie sygnal -> ponowna proba
 void sem_lock(int sem_id) {
     struct sembuf op = { .sem_num = SEM_MUTEX, .sem_op = -1, .sem_flg = 0 };
     while (semop(sem_id, &op, 1) == -1) {
@@ -107,6 +116,7 @@ void sem_lock(int sem_id) {
     }
 }
 
+// Wyjscie z sekcji krytycznej
 void sem_unlock(int sem_id) {
     struct sembuf op = { .sem_num = SEM_MUTEX, .sem_op = +1, .sem_flg = 0 };
     while (semop(sem_id, &op, 1) == -1) {
@@ -115,6 +125,7 @@ void sem_unlock(int sem_id) {
     }
 }
 
+// Zdarzenie stolikowe - budzenie oczekujacych klientow
 void sem_post_event(int sem_id, unsigned short semnum) {
     struct sembuf op = { .sem_num = semnum, .sem_op = +1, .sem_flg = IPC_NOWAIT };
     if (semop(sem_id, &op, 1) == -1) {
@@ -124,6 +135,7 @@ void sem_post_event(int sem_id, unsigned short semnum) {
     }
 }
 
+// Czekanie na zdarzenie z timeoutem - bez busy-waitingu (1 - otzrymane, 0 -timeout, -1 - blad lub przerwanie)
 int sem_timedwait_event_ms(int sem_id, unsigned short semnum, int timeout_ms) {
     if (timeout_ms < 0) timeout_ms = 0;
 
@@ -142,6 +154,7 @@ int sem_timedwait_event_ms(int sem_id, unsigned short semnum, int timeout_ms) {
     }
 }
 
+// Inicjalizacja stolikow w shm (pojemnosc, liczba, baza dla SIGUSR1)
 void ipc_init_tables_for_manager(IPC *ipc, int x1, int x2, int x3, int x4) {
     sem_lock(ipc->sem_id);
 
@@ -173,6 +186,8 @@ void ipc_init_tables_for_manager(IPC *ipc, int x1, int x2, int x3, int x4) {
     sem_unlock(ipc->sem_id);
 }
 
+// Sprawdza, czy da sie zarezerwowac group_size miejsc przy stoliku
+// Uwzglednia regule rownolicznych grup i blokady wynikajace z rezerwacji
 static bool can_reserve(Table *t, int group_size) {
     if (t->capacity <= 0) return false;
     if (t->group_size_allowed != 0 && t->group_size_allowed != group_size) return false;
@@ -182,6 +197,7 @@ static bool can_reserve(Table *t, int group_size) {
     return free_seats >= group_size;
 }
 
+// Wybor stolika + rezerwacja "pending", zwraca indeks stolika lub -1, gdy nie znaleziono miejsca
 int pick_table_and_reserve(IPC *ipc, int group_size, int *out_table) {
     if (group_size < 1 || group_size > 3) return -1;
 
@@ -195,6 +211,7 @@ int pick_table_and_reserve(IPC *ipc, int group_size, int *out_table) {
     int best = -1;
     int best_waste = 9999;
 
+    // Szukanie najlepszego stolika - minimalizacja marnowania wolnych miejsc
     for (int i = 0; i < ipc->st->tables_count; i++) {
         Table *t = &ipc->st->tables[i];
         if (!can_reserve(t, group_size)) continue;
@@ -210,6 +227,7 @@ int pick_table_and_reserve(IPC *ipc, int group_size, int *out_table) {
         }
     }
 
+    // Rezerwacja miejsc jako pending
     if (best != -1) {
         Table *t = &ipc->st->tables[best];
         t->pending_seats += group_size;
@@ -221,6 +239,7 @@ int pick_table_and_reserve(IPC *ipc, int group_size, int *out_table) {
     return best;
 }
 
+//  Przejscie pending -> occupied
 void activate_seating(IPC *ipc, int group_size, int table_index) {
     sem_lock(ipc->sem_id);
     if (table_index >= 0 && table_index < ipc->st->tables_count) {
@@ -234,6 +253,7 @@ void activate_seating(IPC *ipc, int group_size, int table_index) {
     sem_unlock(ipc->sem_id);
 }
 
+// Cofniecie rezerwacji pending
 void cancel_reservation(IPC *ipc, int group_size, int table_index) {
     sem_lock(ipc->sem_id);
     if (table_index >= 0 && table_index < ipc->st->tables_count) {
@@ -248,6 +268,7 @@ void cancel_reservation(IPC *ipc, int group_size, int table_index) {
     sem_post_event(ipc->sem_id, SEM_TABLE_EVENT);
 }
 
+// Zakonczenie jedzenia i zwolnienie miejsc
 void finish_eating_and_leave(IPC *ipc, int group_size, int table_index) {
     sem_lock(ipc->sem_id);
     if (table_index >= 0 && table_index < ipc->st->tables_count) {
@@ -259,9 +280,11 @@ void finish_eating_and_leave(IPC *ipc, int group_size, int table_index) {
         }
     }
     sem_unlock(ipc->sem_id);
+    // budzenie klientow czekajacych na miejsce
     sem_post_event(ipc->sem_id, SEM_TABLE_EVENT);
 }
 
+//SIGUSR1 - tylko raz moze
 int add_more_x3_tables_once(IPC *ipc) {
     int added = 0;
     sem_lock(ipc->sem_id);
@@ -285,10 +308,12 @@ int add_more_x3_tables_once(IPC *ipc) {
     }
 
     sem_unlock(ipc->sem_id);
+    // Po dodaniu stolikow budzenie oczekujacych (mozliwe nowe miejsca)
     if (added > 0) sem_post_event(ipc->sem_id, SEM_TABLE_EVENT);
     return added;
 }
 
+// SIGUSR2 - Rezerwacja stalej liczby miejsc, zwraca ile sie udalo w danej chwili
 int reserve_seats_fixed(IPC *ipc, int seats) {
     if (seats <= 0) return 0;
 

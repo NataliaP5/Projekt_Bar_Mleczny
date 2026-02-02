@@ -15,22 +15,25 @@
 #define C_MAG   "\033[35m"
 #define C_CYN   "\033[36m"
 
+// Flagi ustawiane w handlerach sygnalow
 static volatile sig_atomic_t g_usr1  = 0;
 static volatile sig_atomic_t g_usr2  = 0;
 static volatile sig_atomic_t g_fire  = 0;
 static volatile sig_atomic_t g_close = 0;
 static volatile sig_atomic_t g_tstp = 0;
-static void on_tstp(int sig){ (void)sig; g_tstp = 1; }
-static void on_usr1(int sig){ (void)sig; g_usr1 = 1; }
-static void on_usr2(int sig){ (void)sig; g_usr2 = 1; }
-static void on_fire(int sig){ (void)sig; g_fire = 1; }
-static void on_close(int sig){ (void)sig; g_close = 1; }
+static void on_tstp(int sig){ (void)sig; g_tstp = 1; } // SIGTSTP: pauza, zatrzymanie proc.pot.
+static void on_usr1(int sig){ (void)sig; g_usr1 = 1; } // SIGUSR1: podwojenie X3
+static void on_usr2(int sig){ (void)sig; g_usr2 = 1; } // SIGUSR2: rezerwacje miejsc
+static void on_fire(int sig){ (void)sig; g_fire = 1; } // SIGTERM: pozar/ewakuacja
+static void on_close(int sig){ (void)sig; g_close = 1; } // SIGINT: normalne zamykanie (CTRL+C) 
 
+// Rozmiar pola danych w SysV msg
 static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
 
+// Manager sledzi stan klientow, zeby w razie awarii/konczenia posprzatac pending/occupied
 typedef struct {
     pid_t pid;
-    int stage;
+    int stage; // 0 = brak, 1 = pending (rezerwacja), 2 = seated (occupied)
     int group_size;
     int table_index;
 } ClientTrack;
@@ -42,6 +45,7 @@ static ClientTrack* find_track(ClientTrack *tracks, int n, pid_t pid) {
     return NULL;
 }
 
+// Sprzatanie po kliencie, ktory zakonczyl sie "w srodku" (cofniecie rezerwacji/zwolnienie occ)
 static void cleanup_if_needed(IPC *ipc, ClientTrack *tracks, int n, pid_t pid, const char *where) {
     ClientTrack *t = find_track(tracks, n, pid);
     if (!t) return;
@@ -59,6 +63,7 @@ static void cleanup_if_needed(IPC *ipc, ClientTrack *tracks, int n, pid_t pid, c
     }
 }
 
+// Odczyt liczby miejsc do rezerwacji po SIGUSR2 (interaktywny tryb)
 static int read_reserve_from_stdin(void) {
     for (int tries = 0; tries < 3; tries++) {
         char buf[64];
@@ -77,6 +82,8 @@ static int read_reserve_from_stdin(void) {
     return 0;
 }
 
+// Odbieranie wiadomosci kierowanych do managera
+// Aktualizacja trackow klientow (pending/seated/left), obsluga handshake rezerwacji
 static void drain_manager_msgs(IPC *ipc, ClientTrack *tracks, int n, int reserve_target) {
     for (;;) {
         Msg m;
@@ -87,11 +94,12 @@ static void drain_manager_msgs(IPC *ipc, ClientTrack *tracks, int n, int reserve
             perror("manager msgrcv MTYPE_MANAGER");
             break;
         }
-
+        // Ile miejsc zarezerwowac
         if (m.kind == MSG_RESERVE_ASK) {
             int want = reserve_target;
             if (want <= 0) want = read_reserve_from_stdin();
 
+            // reserve_remaining - licznik miejsc, ktore jeszcze trzeba zarezerwowac
             sem_lock(ipc->sem_id);
             ipc->st->reserve_remaining += want;
             int rem = ipc->st->reserve_remaining;
@@ -129,6 +137,7 @@ static void drain_manager_msgs(IPC *ipc, ClientTrack *tracks, int n, int reserve
     }
 }
 
+// Spawn procesu potomnego przez fork+execl
 static pid_t spawn(const char *path, const char *arg1) {
     pid_t pid = fork();
     if (pid == -1) DIE_PERROR("fork");
@@ -140,6 +149,7 @@ static pid_t spawn(const char *path, const char *arg1) {
     return pid;
 }
 
+// Losowy czas nastepnego przyjscia klienta
 static int next_arrival_ms(int min_ms, int max_ms) {
     if (min_ms < 0) min_ms = 0;
     if (max_ms < min_ms) max_ms = min_ms;
@@ -148,6 +158,7 @@ static int next_arrival_ms(int min_ms, int max_ms) {
     return min_ms + (rand() % span);
 }
 
+// Kolorowane wypisywanie statusow w terminalu
 static void term_printf(const char *color, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -158,6 +169,7 @@ static void term_printf(const char *color, const char *fmt, ...) {
     va_end(ap);
 }
 
+// Zrzut aktualnego stanu sali
 static void snapshot_status(IPC *ipc,
                             int *out_tables,
                             int *out_total_seats,
@@ -203,6 +215,7 @@ static void snapshot_status(IPC *ipc,
     *out_fire = fire;
 }
 
+// Wypis koncowego statusu do logow i terminala
 static void print_final_status(IPC *ipc, const char *tag) {
     int tables, total, occ, pend, res, res_rem, dishes, closing, fire;
     long long revenue;
@@ -217,6 +230,7 @@ static void print_final_status(IPC *ipc, const char *tag) {
         tag, tables, total, occ, pend, res, res_rem, dishes, revenue, closing, fire);
 }
 
+// Nieblokujace "zbieranie" zakonczonych procesow potomnych
 static void reap_nonblocking(IPC *ipc, ClientTrack *tracks, int n) {
     for (;;) {
         pid_t w = waitpid(-1, NULL, WNOHANG);
@@ -231,6 +245,7 @@ static void reap_nonblocking(IPC *ipc, ClientTrack *tracks, int n) {
     }
 }
 
+// Liczenie ilu klientow nadal zyje
 static int count_alive_clients(pid_t *pids, int n) {
     int alive = 0;
     for (int i = 0; i < n; i++) {
@@ -244,6 +259,7 @@ static int count_alive_clients(pid_t *pids, int n) {
     return alive;
 }
 
+// Zatrzymanie procesu , cleanup pending/occupied
 static void stop_pid(IPC *ipc, ClientTrack *tracks, int n,
                      pid_t pid, const char *name, int grace_ms) {
     if (pid <= 0) return;
@@ -280,6 +296,7 @@ static void stop_pid(IPC *ipc, ClientTrack *tracks, int n,
     if (w == pid) cleanup_if_needed(ipc, tracks, n, w, "stop_pid_kill");
 }
 
+// Cykliczne wysylanie "ticka" rezerwacji
 static void send_reserve_tick(IPC *ipc) {
     Msg t;
     memset(&t, 0, sizeof(t));
@@ -293,6 +310,7 @@ static void send_reserve_tick(IPC *ipc) {
 }
 
 int main(int argc, char **argv) {
+    // Walidacja argumentow
     if (argc < 5) {
         fprintf(stderr, "Usage: %s X1 X2 X3 X4 [CLIENTS] [RESERVESEATS] [ARR_MIN_MS] [ARR_MAX_MS] [SEED]\n", argv[0]);
         fprintf(stderr, "  CLIENTS=0 -> tryb ciagly\n");
@@ -314,6 +332,7 @@ int main(int argc, char **argv) {
 
     #define MAX_CLIENT_PROCS 10000
 
+    // Bezpieczny limit procesow klientow
     if (clients > 0 && clients > MAX_CLIENT_PROCS) {
         fprintf(stderr,
             "[WARN] Requested %d clients, but max supported is %d. Capping.\n",
@@ -323,7 +342,7 @@ int main(int argc, char **argv) {
         clients = MAX_CLIENT_PROCS;
     }
 
-
+    // Rejestracja handlerow sygnalow
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sigemptyset(&sa.sa_mask);
@@ -339,6 +358,7 @@ int main(int argc, char **argv) {
     sa.sa_handler = on_tstp;
     if (sigaction(SIGTSTP, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTSTP");
 
+    // Seed losowosci
     unsigned int seed;
     if (seed_arg >= 0) seed = (unsigned int)seed_arg;
     else seed = (unsigned int)time(NULL) ^ (unsigned int)getpid();
@@ -347,6 +367,7 @@ int main(int argc, char **argv) {
     log_line("manager", "TIMES: eat=[%d,%d]ms drain=%dms no_progress=%dms arr=[%d,%d]ms seed=%u",
              EAT_BASE_MS, EAT_MAX_MS, DRAIN_TIMEOUT_MS, DRAIN_NO_PROGRESS_MS, arr_min, arr_max, seed);
 
+    // IPC: manager probuje stworzyc, a jesli istnieje otwiera
     IPC ipc;
     if (!ipc_create(&ipc, "ipc.key")) {
         if (!ipc_open(&ipc, "ipc.key")) {
@@ -355,8 +376,10 @@ int main(int argc, char **argv) {
         }
     }
 
+    // Inicjalizacja stolikow w pamieci dzielonej
     ipc_init_tables_for_manager(&ipc, X1, X2, X3, X4);
 
+    // Wyzerowanie flag stanu
     sem_lock(ipc.sem_id);
     ipc.st->reserve_remaining = 0;
     ipc.st->fire_alarm = 0;
@@ -366,6 +389,7 @@ int main(int argc, char **argv) {
 
     log_line("manager", "Manager started pid=%d. Spawning worker+cashier.", (int)getpid());
 
+    // Uruchomienie worker i cashier jako osobne procesy
     pid_t worker = spawn("./bin/worker", NULL);
     pid_t cashier = spawn("./bin/cashier", NULL);
 
@@ -377,6 +401,7 @@ int main(int argc, char **argv) {
     int stop_spawning = 0;
     int close_started = 0;
 
+    // Harmonogram generowania klientow
     long long next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
     long long last_tick = now_ms();
     long long last_status = now_ms();
