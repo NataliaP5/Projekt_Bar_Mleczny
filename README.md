@@ -1,5 +1,9 @@
 # Projekt Systemy Operacyjne - Bar mleczny
-
+**Autor:** Natalia Pliś 
+**Nr indeksu:** 155212 
+**Środowisko:** Linux (Torus)
+**Architektura:** x86_64
+**Kompilator:** gcc 8.5.0 (C11), linkowanie z -pthread
 Repozytorium: https://github.com/NataliaP5/Projekt_Bar_Mleczny
 
 # 1.  Opis projektu
@@ -262,7 +266,7 @@ PRACOWNIK po tick:
 
 # 9. Testy
 
-**Test 1 - Skrajne obiążenie**
+**Test 1 - Skrajne obciążenie**
 
 Cel: sprawdzić stabilność (brak zawieszenia/deadlock), poprawne sprzątanie IPC i działanie w ekstremalnym napływie.
 
@@ -442,7 +446,7 @@ Poniższe elementy są ponad minimum opisu tematu i służą zwiększeniu stabil
 
 - Oczekiwanie z limitem czasu zamiast aktywnego odpytywania - klient nie „kręci się w pętli”, tylko czeka na zdarzenia z timeoutem (co ogranicza obciążenie CPU i poprawia stabilność przy dużej liczbie klientów).
 
-- Dwa tryby rezerwacji (SIGUSR2) - rezerwacja może być zadana parametrem uruchomienia albo interaktywnie po sygnale (handshake worker–manager), co ułatwia demonstrację na prezentacji i w testach.
+- Dwa tryby rezerwacji (SIGUSR2) - rezerwacja może być zadana parametrem uruchomienia albo interaktywnie po sygnale (handshake worker-manager), co ułatwia demonstrację na prezentacji i w testach.
 
 # 12. Permalinki do kluczowych fragmentów kodu
 
