@@ -230,7 +230,9 @@ albo bezpośrednio:
 ./bin/manager 2 2 2 1 200 4 60 200
 
 Program przyjmuje argumenty: X1 X2 X3 X4 CLIENTS RESERVESEATS ARR_MIN_MS ARR_MAX_MS [SEED]
+
 X1 X2 X3 X4 - liczby stolików 1/2/3/4-os.
+
 kolejne parametry: liczba klientów, rezerwacje, minimalny/maksymalny czas przyjścia (ms), SEED opcjonalny.
 
 # 9. Problemy, wnioski
@@ -238,38 +240,37 @@ kolejne parametry: liczba klientów, rezerwacje, minimalny/maksymalny czas przyj
 # 10. Elementy dodatkowe
 
 # 11. Permalinki do kluczowych fragmentów kodu
-## 11. Permalinki do kluczowych fragmentów kodu (wymagane)
 
-- `fork()` -
-- `exec()` / `execl()` -
-- `waitpid()` -
-- `exit()` / `_exit()` -
+- `fork()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L132-L140 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L541-L566
+- `execl()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L136-L137 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L563
+- `waitpid()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L616-L624
+- `exit()` / `_exit()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L565
 
-- `sigaction()` -
-- `kill()` -
+- `sigaction()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L327-L340
+- `kill()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L392 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L399 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L495
 
-- `ftok()` -
+- `ftok()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L12-L13
 
-- `msgget()` -
-- `msgsnd()` -
-- `msgrcv()` -
-- `msgctl()` -
+- `msgget()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L40 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L75-L76
+- `msgctl()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L92
+- `msgrcv()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/cashier.c#L39-L46
+- `msgsnd()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/cashier.c#L90-L92
 
-- `shmget()` -
-- `shmat()` -
-- `shmdt()` -
-- `shmctl()` -
+- `shmget()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L30-L31 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L69-L70
+- `shmat()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L48-L49 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L78-L79
+- `shmdt()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L85
+- `shmctl()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L36 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L95
 
-- `semget()` -
-- `semctl()` -
-- `semop()`-
-- `semtimedop()` -
+- `semget()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L33 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L72-L73
+- `semctl()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L53 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L98
+- `semop()`- https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L104-L106 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L112-L114 https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L120-L123
+- `semtimedop()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/ipc.c#L137-L140
 
-- `pthread_create()` -
-- `pthread_join()` -
+- `pthread_create()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/client.c#L197-L201
+- `pthread_join()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/client.c#L219-L223
 
-- `open()` -
-- `write()` -
-- `close()` -
-- `unlink()` -
+- `open()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/common.c#L42
+- `write()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/common.c#L61-L62
+- `close()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/common.c#L69
+- `unlink()` - https://github.com/NataliaP5/Projekt_Bar_Mleczny/blob/c9ddfab1baaec62b30677a3eab9614aaf29405fd/src/manager.c#L629
 
