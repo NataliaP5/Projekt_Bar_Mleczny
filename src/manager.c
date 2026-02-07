@@ -319,10 +319,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int X1 = parse_int(argv[1], 0, 100, "X1");
-    int X2 = parse_int(argv[2], 0, 100, "X2");
-    int X3 = parse_int(argv[3], 0, 100, "X3");
-    int X4 = parse_int(argv[4], 0, 100, "X4");
+    int X1 = parse_int(argv[1], 0, MAX_TABLES, "X1");
+    int X2 = parse_int(argv[2], 0, MAX_TABLES, "X2");
+    int X3 = parse_int(argv[3], 0, MAX_TABLES, "X3");
+    int X4 = parse_int(argv[4], 0, MAX_TABLES, "X4");
 
     int clients = (argc >= 6) ? parse_int(argv[5], 0, 1000000, "CLIENTS") : 120;
     int reserve_target = (argc >= 7) ? parse_int(argv[6], -1, 2000, "RESERVESEATS") : -1;

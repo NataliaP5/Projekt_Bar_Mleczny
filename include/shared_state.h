@@ -1,7 +1,7 @@
 #pragma once
 #include <sys/types.h>
 
-#define MAX_TABLES 256
+#define MAX_TABLES 20000
 
 typedef struct {
     int capacity;
