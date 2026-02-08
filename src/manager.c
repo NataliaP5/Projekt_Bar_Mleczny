@@ -1,4 +1,4 @@
-#include "common.h" 
+#include "common.h"
 #include "ipc.h"
 #include <errno.h>
 #include <signal.h>
@@ -503,17 +503,13 @@ int main(int argc, char **argv) {
             close_started = 1;
             stop_spawning = 1;
 
-            sem_lock(ipc.sem_id);
-            ipc.st->closing = 1;
-            sem_unlock(ipc.sem_id);
-
-            drain_deadline = now_ms() + 60000;
+            drain_deadline = -1;
             last_progress_at = now_ms();
             last_occ = -1;
             last_pend = -1;
 
-            print_final_status(&ipc, "CLOSE_STARTED_STATUS (LIMIT_REACHED)");
-            term_printf(C_YEL, "[CLOSE] limit reached: stop spawning, draining (timeout=60000ms)\n");
+            print_final_status(&ipc, "LIMIT_REACHED_STATUS (STOP_SPAWNING)");
+            term_printf(C_YEL, "[LIMIT] limit reached: stop spawning, continue service until all clients exit\n");
         }
 
         long long now = now_ms();
@@ -540,7 +536,7 @@ int main(int argc, char **argv) {
             if (close_started && occ == 0 && pend == 0) {
                 int alive = count_alive_clients(client_pids, spawned);
                 if (alive == 0) {
-                    term_printf(C_YEL, "[CLOSE] drain complete (bar empty, all clients exited)\n");
+                    term_printf(C_YEL, "[CLOSE] LIMIT REACHED, all served\n");
                     print_final_status(&ipc, "FINAL_STATUS (END)");
                     break;
                 } else {
@@ -580,14 +576,32 @@ int main(int argc, char **argv) {
             int cap = (int)(sizeof(client_pids)/sizeof(client_pids[0]));
 
             if (clients > 0) {
-                int burst_limit = 200;
+                int burst_limit = clients;
+
+                // time-slice: nie blokuj glownej petli na dlugo (Ctrl+C, statusy, IPC)
+                long long slice_start = now_ms();
 
                 while (!stop_spawning && i <= clients && spawned < cap && burst_limit-- > 0) {
+                    // Jesli przyszlo Ctrl+C / pozar / pauza, nie miel dalej forkow
+                    if (g_close || g_fire || g_tstp) break;
+
+                    long long now2 = now_ms();
+                    if (now2 < next_spawn_at) break;
+
+                    // Nie blokuj glownej petli zbyt dlugo
+                    if ((now2 - slice_start) >= 15) break;
+
                     char idbuf[32];
                     snprintf(idbuf, sizeof(idbuf), "%d", i);
 
                     pid_t cpid = fork();
                     if (cpid == -1) {
+                        if (errno == EAGAIN || errno == ENOMEM) {
+                            sleep_ms(2);
+                            reap_nonblocking(&ipc, tracks, spawned);
+                            break; // oddaj sterowanie glownej petli
+                        }
+
                         fprintf(stderr, "[WARN] fork() failed at i=%d: %s. Stop spawning.\n", i, strerror(errno));
                         log_line("manager", "WARN: fork failed at i=%d: %s. Stop spawning.", i, strerror(errno));
 
@@ -626,7 +640,14 @@ int main(int argc, char **argv) {
 
                     i++;
 
-                    sleep_us(CLIENT_BURST_US);
+                    next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
+
+                    if ((spawned % 64) == 0) {
+                        // Zbierz zombie i odbierz wiadomosci - inaczej wszystko "stoi" w jednym miejscu
+                        reap_nonblocking(&ipc, tracks, spawned);
+                        drain_manager_msgs(&ipc, tracks, spawned, reserve_target);
+                        sleep_us(CLIENT_BURST_US);
+                    }
                 }
 
                 if (spawned >= cap) {
@@ -734,7 +755,9 @@ int main(int argc, char **argv) {
             last_tick = now;
         }
 
-        sleep_ms(20);
+        // Podczas intensywnego spawnowania nie usypiac na 20ms
+        if (!stop_spawning && clients > 0 && i <= clients) sleep_ms(1);
+        else sleep_ms(20);
     }
 
     if (g_fire) {

@@ -55,15 +55,14 @@ int main(void) {
             break;
         }
 
-        // Klient zostal zdjety z kolejki do kasjera -> zmniejszenie licznika
-        sem_lock(ipc.sem_id);
-        if (ipc.st->cashier_queue_len > 0) ipc.st->cashier_queue_len--;
-        sem_unlock(ipc.sem_id);
-
         if (req.kind != MSG_PAY_REQ) {
             log_line("cashier", "Ignoring msg kind=%d", req.kind);
             continue;
         }
+
+        sem_lock(ipc.sem_id);
+        if (ipc.st->cashier_queue_len > 0) ipc.st->cashier_queue_len--;
+        sem_unlock(ipc.sem_id);
 
         // Czas obslugi (zeby kolejka byla realna)
         if (CASHIER_SERVICE_MS > 0) sleep_ms(CASHIER_SERVICE_MS);
