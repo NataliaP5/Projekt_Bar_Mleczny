@@ -24,6 +24,18 @@ static int is_fire_now(IPC *ipc) {
     return fire;
 }
 
+// licznik kolejki do kasjera w shm
+static void cashier_queue_inc(IPC *ipc) {
+    sem_lock(ipc->sem_id);
+    ipc->st->cashier_queue_len++;
+    sem_unlock(ipc->sem_id);
+}
+static void cashier_queue_dec_safe(IPC *ipc) {
+    sem_lock(ipc->sem_id);
+    if (ipc->st->cashier_queue_len > 0) ipc->st->cashier_queue_len--;
+    sem_unlock(ipc->sem_id);
+}
+
 static void notify_manager(IPC *ipc, int kind, pid_t me, int group, int table, int value) {
     Msg m;
     memset(&m, 0, sizeof(m));
@@ -47,12 +59,16 @@ static void notify_manager(IPC *ipc, int kind, pid_t me, int group, int table, i
     }
 }
 
-static int wait_reply(IPC *ipc, long mytype, int expected_kind, Msg *out) {
+// wait_reply na dowolnej kolejce (reply queue)
+static int wait_reply_on_queue(int msg_id, long mytype, int expected_kind, Msg *out) {
     while (!g_stop) {
         Msg rep;
-        ssize_t r = msgrcv(ipc->msg_id, &rep, msgsz(), mytype, 0);
+        ssize_t r = msgrcv(msg_id, &rep, msgsz(), mytype, 0);
         if (r == -1) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                if (g_stop) return 0;
+                continue;
+            }
             perror("client msgrcv");
             return 0;
         }
@@ -63,7 +79,6 @@ static int wait_reply(IPC *ipc, long mytype, int expected_kind, Msg *out) {
     }
     return 0;
 }
-
 
 static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount, int dish_id) {
     Msg m;
@@ -76,13 +91,30 @@ static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount
     m.value = amount;
     m.dish_id = dish_id;
 
-    if (msgsnd(ipc->msg_id, &m, msgsz(), 0) == -1) {
+    // Klient staje do kolejki do kasjera (widoczne w shm)
+    cashier_queue_inc(ipc);
+
+    for (;;) {
+        if (msgsnd(ipc->msg_pay_req_id, &m, msgsz(), 0) == 0) break;
+
+        if (errno == EINTR) {
+            if (g_stop || is_fire_now(ipc)) {
+                cashier_queue_dec_safe(ipc);
+                return 0;
+            }
+            continue;
+        }
+
+        cashier_queue_dec_safe(ipc);
         perror("client msgsnd PAY_REQ");
         return 0;
     }
 
     Msg rep;
-    if (!wait_reply(ipc, (long)me, MSG_PAY_REPLY, &rep)) return 0;
+    if (!wait_reply_on_queue(ipc->msg_pay_rep_id, (long)me, MSG_PAY_REPLY, &rep)) {
+        cashier_queue_dec_safe(ipc);
+        return 0;
+    }
     return rep.value != 0;
 }
 
@@ -95,13 +127,20 @@ static int send_serve_request(IPC *ipc, pid_t me, int group, int table) {
     m.group_size = group;
     m.table_index = table;
 
-    if (msgsnd(ipc->msg_id, &m, msgsz(), 0) == -1) {
+    for (;;) {
+        if (msgsnd(ipc->msg_work_req_id, &m, msgsz(), 0) == 0) break;
+
+        if (errno == EINTR) {
+            if (g_stop || is_fire_now(ipc)) return 0;
+            continue;
+        }
+
         perror("client msgsnd SERVE_REQ");
         return 0;
     }
 
     Msg rep;
-    if (!wait_reply(ipc, (long)me, MSG_SERVE_REPLY, &rep)) return 0;
+    if (!wait_reply_on_queue(ipc->msg_work_rep_id, (long)me, MSG_SERVE_REPLY, &rep)) return 0;
     return rep.value != 0;
 }
 
@@ -127,7 +166,6 @@ static int pick_menu_id(int client_id) {
     int n = (int)(sizeof(menu) / sizeof(menu[0]));
     return (int)(rand_r(&seed) % (unsigned)n);
 }
-
 
 typedef struct {
     int group_size;
@@ -249,8 +287,8 @@ static void send_dish_return_fancy(IPC *ipc, pid_t me, int id, int group, int ta
         d.table_index = table;
         d.value = group;
 
-        if (msgsnd(ipc->msg_id, &d, msgsz(), IPC_NOWAIT) == -1) {
-            if (errno != EAGAIN) perror("client msgsnd DISH_RETURN (collective)");
+        if (msgsnd(ipc->msg_work_req_id, &d, msgsz(), IPC_NOWAIT) == -1) {
+            if (errno != EAGAIN && errno != EINTR) perror("client msgsnd DISH_RETURN (collective)");
         }
     } else {
         for (int j = 0; j < group; j++) {
@@ -263,8 +301,8 @@ static void send_dish_return_fancy(IPC *ipc, pid_t me, int id, int group, int ta
             d.table_index = table;
             d.value = 1;
 
-            if (msgsnd(ipc->msg_id, &d, msgsz(), IPC_NOWAIT) == -1) {
-                if (errno != EAGAIN) perror("client msgsnd DISH_RETURN (single)");
+            if (msgsnd(ipc->msg_work_req_id, &d, msgsz(), IPC_NOWAIT) == -1) {
+                if (errno != EAGAIN && errno != EINTR) perror("client msgsnd DISH_RETURN (single)");
                 break;
             }
         }
@@ -286,7 +324,14 @@ int main(int argc, char **argv) {
     sa.sa_flags = 0;
     sa.sa_handler = on_term;
     if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
-    if (sigaction(SIGINT,  &sa, NULL) == -1) DIE_PERROR("sigaction SIGINT");
+
+    // Klient ignoruje SIGINT, zamyka go manager przez SIGTERM
+    struct sigaction si;
+    memset(&si, 0, sizeof(si));
+    sigemptyset(&si.sa_mask);
+    si.sa_flags = 0;
+    si.sa_handler = SIG_IGN;
+    if (sigaction(SIGINT, &si, NULL) == -1) DIE_PERROR("sigaction SIGINT");
 
     int id = parse_int(argv[1], 1, 10000000, "CLIENT_ID");
     pid_t me = getpid();
@@ -314,6 +359,7 @@ int main(int argc, char **argv) {
     MenuItem item = menu[dish_id];
     int amount = item.price * group;
     long long seat_deadline = now_ms() + WAIT_SEAT_TIMEOUT_MS;
+
     while (!g_stop) {
         int picked = pick_table_and_reserve(&ipc, group, &table);
         if (picked >= 0) { pending = 1; break; }

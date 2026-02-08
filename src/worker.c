@@ -39,8 +39,17 @@ int main(void) {
     memset(&sa, 0, sizeof(sa));
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
+
     sa.sa_handler = on_term;
     if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
+
+    struct sigaction si;
+    memset(&si, 0, sizeof(si));
+    sigemptyset(&si.sa_mask);
+    si.sa_flags = 0;
+    si.sa_handler = SIG_IGN;
+    if (sigaction(SIGINT, &si, NULL) == -1) DIE_PERROR("sigaction SIGINT");
+
     sa.sa_handler = on_usr1;
     if (sigaction(SIGUSR1, &sa, NULL) == -1) DIE_PERROR("sigaction SIGUSR1");
     sa.sa_handler = on_usr2;
@@ -70,14 +79,14 @@ int main(void) {
             ask.kind  = MSG_RESERVE_ASK;
             ask.pid   = getpid();
             if (msgsnd(ipc.msg_id, &ask, msgsz(), IPC_NOWAIT) == -1) {
-                if (errno != EAGAIN) perror("worker msgsnd RESERVE_ASK");
+                if (errno != EAGAIN && errno != EINTR) perror("worker msgsnd RESERVE_ASK");
             } else {
                 log_line("worker", "SIGUSR2: sent RESERVE_ASK to manager");
             }
         }
 
         Msg req;
-        ssize_t r = msgrcv(ipc.msg_id, &req, msgsz(), MTYPE_WORKER, 0);
+        ssize_t r = msgrcv(ipc.msg_work_req_id, &req, msgsz(), MTYPE_WORKER, 0);
         if (r == -1) {
             if (errno == EINTR) {
                 if (g_stop) break;
@@ -114,9 +123,15 @@ int main(void) {
                 rep.table_index = req.table_index;
                 rep.value = ok;
 
-                if (msgsnd(ipc.msg_id, &rep, msgsz(), 0) == -1) {
+                for (;;) {
+                    if (msgsnd(ipc.msg_work_rep_id, &rep, msgsz(), 0) == 0) break;
+                    if (errno == EINTR) {
+                        if (g_stop) break;
+                        continue;
+                    }
                     perror("worker msgsnd SERVE_REPLY");
                     g_stop = 1;
+                    break;
                 }
                 break;
             }
@@ -131,9 +146,16 @@ int main(void) {
                     rep.kind = MSG_RESERVE_REPLY;
                     rep.pid = req.pid;
                     rep.value = got;
-                    if (msgsnd(ipc.msg_id, &rep, msgsz(), 0) == -1) {
+
+                    for (;;) {
+                        if (msgsnd(ipc.msg_work_rep_id, &rep, msgsz(), 0) == 0) break;
+                        if (errno == EINTR) {
+                            if (g_stop) break;
+                            continue;
+                        }
                         perror("worker msgsnd RESERVE_REPLY");
                         g_stop = 1;
+                        break;
                     }
                 }
                 break;

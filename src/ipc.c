@@ -19,6 +19,15 @@ static void ipc_reset(IPC *ipc) {
     ipc->shm_id = -1;
     ipc->sem_id = -1;
     ipc->msg_id = -1;
+
+    // Osobne kolejki dla kasy (zapobiega deadlockowi request/reply na jednej kolejce)
+    ipc->msg_pay_req_id = -1;
+    ipc->msg_pay_rep_id = -1;
+
+    // Osobne kolejki dla workera
+    ipc->msg_work_req_id = -1;
+    ipc->msg_work_rep_id = -1;
+
     ipc->st = NULL;
 }
 
@@ -28,6 +37,14 @@ bool ipc_create(IPC *ipc, const char *keyfile) {
     key_t k_shm = make_key(keyfile, 0x43);
     key_t k_sem = make_key(keyfile, 0x44);
     key_t k_msg = make_key(keyfile, 0x45);
+
+    // Osobne klucze dla kasy
+    key_t k_pay_req = make_key(keyfile, 0x50);
+    key_t k_pay_rep = make_key(keyfile, 0x52);
+
+    // Osobne klucze dla workera
+    key_t k_work_req = make_key(keyfile, 0x54);
+    key_t k_work_rep = make_key(keyfile, 0x56);
 
     ipc->shm_id = shmget(k_shm, sizeof(SharedState), IPC_CREAT | IPC_EXCL | IPC_PERMS);
     if (ipc->shm_id == -1) { perror("shmget"); return false; }
@@ -42,6 +59,50 @@ bool ipc_create(IPC *ipc, const char *keyfile) {
     ipc->msg_id = msgget(k_msg, IPC_CREAT | IPC_EXCL | IPC_PERMS);
     if (ipc->msg_id == -1) {
         perror("msgget");
+        if (semctl(ipc->sem_id, 0, IPC_RMID) == -1) perror("semctl IPC_RMID (rollback)");
+        if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID (rollback)");
+        return false;
+    }
+
+    // Tworzenie osobnych kolejek dla kasy
+    ipc->msg_pay_req_id = msgget(k_pay_req, IPC_CREAT | IPC_EXCL | IPC_PERMS);
+    if (ipc->msg_pay_req_id == -1) {
+        perror("msgget pay_req");
+        if (msgctl(ipc->msg_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (semctl(ipc->sem_id, 0, IPC_RMID) == -1) perror("semctl IPC_RMID (rollback)");
+        if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID (rollback)");
+        return false;
+    }
+
+    ipc->msg_pay_rep_id = msgget(k_pay_rep, IPC_CREAT | IPC_EXCL | IPC_PERMS);
+    if (ipc->msg_pay_rep_id == -1) {
+        perror("msgget pay_rep");
+        if (msgctl(ipc->msg_pay_req_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (msgctl(ipc->msg_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (semctl(ipc->sem_id, 0, IPC_RMID) == -1) perror("semctl IPC_RMID (rollback)");
+        if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID (rollback)");
+        return false;
+    }
+
+    // Tworzenie osobnych kolejek dla workera
+    ipc->msg_work_req_id = msgget(k_work_req, IPC_CREAT | IPC_EXCL | IPC_PERMS);
+    if (ipc->msg_work_req_id == -1) {
+        perror("msgget work_req");
+        if (msgctl(ipc->msg_pay_rep_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (msgctl(ipc->msg_pay_req_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (msgctl(ipc->msg_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (semctl(ipc->sem_id, 0, IPC_RMID) == -1) perror("semctl IPC_RMID (rollback)");
+        if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID (rollback)");
+        return false;
+    }
+
+    ipc->msg_work_rep_id = msgget(k_work_rep, IPC_CREAT | IPC_EXCL | IPC_PERMS);
+    if (ipc->msg_work_rep_id == -1) {
+        perror("msgget work_rep");
+        if (msgctl(ipc->msg_work_req_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (msgctl(ipc->msg_pay_rep_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (msgctl(ipc->msg_pay_req_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
+        if (msgctl(ipc->msg_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID (rollback)");
         if (semctl(ipc->sem_id, 0, IPC_RMID) == -1) perror("semctl IPC_RMID (rollback)");
         if (shmctl(ipc->shm_id, IPC_RMID, NULL) == -1) perror("shmctl IPC_RMID (rollback)");
         return false;
@@ -71,6 +132,14 @@ bool ipc_open(IPC *ipc, const char *keyfile) {
     key_t k_sem = make_key(keyfile, 0x44);
     key_t k_msg = make_key(keyfile, 0x45);
 
+    // Osobne klucze dla kasy
+    key_t k_pay_req = make_key(keyfile, 0x50);
+    key_t k_pay_rep = make_key(keyfile, 0x52);
+
+    // Osobne klucze dla workera
+    key_t k_work_req = make_key(keyfile, 0x54);
+    key_t k_work_rep = make_key(keyfile, 0x56);
+
     ipc->shm_id = shmget(k_shm, sizeof(SharedState), IPC_PERMS);
     if (ipc->shm_id == -1) { perror("shmget"); return false; }
 
@@ -79,6 +148,20 @@ bool ipc_open(IPC *ipc, const char *keyfile) {
 
     ipc->msg_id = msgget(k_msg, IPC_PERMS);
     if (ipc->msg_id == -1) { perror("msgget"); return false; }
+
+    // Otwarcie osobnych kolejek dla kasy
+    ipc->msg_pay_req_id = msgget(k_pay_req, IPC_PERMS);
+    if (ipc->msg_pay_req_id == -1) { perror("msgget pay_req"); return false; }
+
+    ipc->msg_pay_rep_id = msgget(k_pay_rep, IPC_PERMS);
+    if (ipc->msg_pay_rep_id == -1) { perror("msgget pay_rep"); return false; }
+
+    // Otwarcie osobnych kolejek dla workera
+    ipc->msg_work_req_id = msgget(k_work_req, IPC_PERMS);
+    if (ipc->msg_work_req_id == -1) { perror("msgget work_req"); return false; }
+
+    ipc->msg_work_rep_id = msgget(k_work_rep, IPC_PERMS);
+    if (ipc->msg_work_rep_id == -1) { perror("msgget work_rep"); return false; }
 
     ipc->st = (SharedState*)shmat(ipc->shm_id, NULL, 0);
     if (ipc->st == (void*)-1) DIE_PERROR("shmat");
@@ -95,6 +178,22 @@ void ipc_close(IPC *ipc) {
 
 // Usuwa zasoby IPC z systemu
 void ipc_destroy(IPC *ipc) {
+    // Usuwanie kolejek kasy
+    if (ipc->msg_pay_req_id >= 0) {
+        if (msgctl(ipc->msg_pay_req_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID pay_req");
+    }
+    if (ipc->msg_pay_rep_id >= 0) {
+        if (msgctl(ipc->msg_pay_rep_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID pay_rep");
+    }
+
+    // Usuwanie kolejek workera
+    if (ipc->msg_work_req_id >= 0) {
+        if (msgctl(ipc->msg_work_req_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID work_req");
+    }
+    if (ipc->msg_work_rep_id >= 0) {
+        if (msgctl(ipc->msg_work_rep_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID work_rep");
+    }
+
     if (ipc->msg_id >= 0) {
         if (msgctl(ipc->msg_id, IPC_RMID, NULL) == -1) perror("msgctl IPC_RMID");
     }

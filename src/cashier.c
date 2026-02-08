@@ -5,6 +5,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#define CASHIER_SERVICE_MS 2 // czas obslugi jednego klienta (0 = natychmiast)
+
 static volatile sig_atomic_t g_stop = 0;
 static void on_term(int sig){ (void)sig; g_stop = 1; }
 
@@ -22,9 +24,16 @@ int main(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+    sa.sa_flags = SA_RESTART;
     sa.sa_handler = on_term;
     if (sigaction(SIGTERM, &sa, NULL) == -1) DIE_PERROR("sigaction SIGTERM");
+
+    struct sigaction si;
+    memset(&si, 0, sizeof(si));
+    sigemptyset(&si.sa_mask);
+    si.sa_flags = 0;
+    si.sa_handler = SIG_IGN;
+    if (sigaction(SIGINT, &si, NULL) == -1) DIE_PERROR("sigaction SIGINT");
 
     IPC ipc;
     if (!ipc_open(&ipc, "ipc.key")) {
@@ -36,7 +45,7 @@ int main(void) {
 
     while (!g_stop) {
         Msg req;
-        ssize_t r = msgrcv(ipc.msg_id, &req, msgsz(), MTYPE_CASHIER, 0);
+        ssize_t r = msgrcv(ipc.msg_pay_req_id, &req, msgsz(), MTYPE_CASHIER, 0);
         if (r == -1) {
             if (errno == EINTR) {
                 if (g_stop) break;
@@ -46,10 +55,18 @@ int main(void) {
             break;
         }
 
+        // Klient zostal zdjety z kolejki do kasjera -> zmniejszenie licznika
+        sem_lock(ipc.sem_id);
+        if (ipc.st->cashier_queue_len > 0) ipc.st->cashier_queue_len--;
+        sem_unlock(ipc.sem_id);
+
         if (req.kind != MSG_PAY_REQ) {
             log_line("cashier", "Ignoring msg kind=%d", req.kind);
             continue;
         }
+
+        // Czas obslugi (zeby kolejka byla realna)
+        if (CASHIER_SERVICE_MS > 0) sleep_ms(CASHIER_SERVICE_MS);
 
         const char *dish = "UNKNOWN";
         int n = (int)(sizeof(menu_names) / sizeof(menu_names[0]));
@@ -87,9 +104,17 @@ int main(void) {
         rep.table_index = req.table_index;
         rep.value = ok;
 
-        if (msgsnd(ipc.msg_id, &rep, msgsz(), 0) == -1) {
+        for (;;) {
+            if (msgsnd(ipc.msg_pay_rep_id, &rep, msgsz(), 0) == 0) break;
+
+            if (errno == EINTR) {
+                if (g_stop) break;
+                continue;
+            }
+
             perror("cashier msgsnd PAY_REPLY");
             g_stop = 1;
+            break;
         }
     }
 

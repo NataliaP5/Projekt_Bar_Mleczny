@@ -50,7 +50,18 @@ typedef struct {
 typedef struct {
     int shm_id;
     int sem_id;
+
+    // kolejka ogolna (manager + rozne komunikaty sterujace)
     int msg_id;
+
+    // osobne kolejki dla kasy (request/reply)
+    int msg_pay_req_id;
+    int msg_pay_rep_id;
+
+    // osobne kolejki dla workera (request/reply)
+    int msg_work_req_id;
+    int msg_work_rep_id;
+
     SharedState *st;
 } IPC;
 

@@ -17,6 +17,7 @@ typedef struct {
     int tables_count;
     Table tables[MAX_TABLES];
 
+    int cashier_queue_len; // ile procesow czeka na obsluzenie przez kasjera
     int fire_alarm;
     int closing;
     int x3_boost_used;

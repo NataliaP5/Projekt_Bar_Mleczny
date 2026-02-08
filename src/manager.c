@@ -1,4 +1,4 @@
-#include "common.h"
+#include "common.h" 
 #include "ipc.h"
 #include <errno.h>
 #include <signal.h>
@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <string.h>
+#include <unistd.h>
 
 #define C_RESET "\033[0m"
 #define C_RED   "\033[31m"
@@ -14,6 +15,8 @@
 #define C_BLU   "\033[34m"
 #define C_MAG   "\033[35m"
 #define C_CYN   "\033[36m"
+
+#define CLIENT_BURST_US 200
 
 // Flagi ustawiane w handlerach sygnalow
 static volatile sig_atomic_t g_usr1  = 0;
@@ -25,7 +28,7 @@ static void on_tstp(int sig){ (void)sig; g_tstp = 1; } // SIGTSTP: pauza, zatrzy
 static void on_usr1(int sig){ (void)sig; g_usr1 = 1; } // SIGUSR1: podwojenie X3
 static void on_usr2(int sig){ (void)sig; g_usr2 = 1; } // SIGUSR2: rezerwacje miejsc
 static void on_fire(int sig){ (void)sig; g_fire = 1; } // SIGTERM: pozar/ewakuacja
-static void on_close(int sig){ (void)sig; g_close = 1; } // SIGINT: normalne zamykanie (CTRL+C) 
+static void on_close(int sig){ (void)sig; g_close = 1; } // SIGINT: normalne zamykanie (CTRL+C)
 
 // Rozmiar pola danych w SysV msg
 static int msgsz(void){ return (int)(sizeof(Msg) - sizeof(long)); }
@@ -114,7 +117,7 @@ static void drain_manager_msgs(IPC *ipc, ClientTrack *tracks, int n, int reserve
             req.kind  = MSG_RESERVE_REQ;
             req.pid   = 0;
             req.value = want;
-            if (msgsnd(ipc->msg_id, &req, msgsz(), 0) == -1) {
+            if (msgsnd(ipc->msg_work_req_id, &req, msgsz(), 0) == -1) {
                 perror("manager msgsnd RESERVE_REQ (from ASK)");
             }
             continue;
@@ -180,7 +183,8 @@ static void snapshot_status(IPC *ipc,
                             int *out_dishes,
                             long long *out_revenue,
                             int *out_closing,
-                            int *out_fire)
+                            int *out_fire,
+                            int *out_cashq)
 {
     int tables = 0, total = 0, occ = 0, pend = 0, res = 0;
 
@@ -200,6 +204,7 @@ static void snapshot_status(IPC *ipc,
     long long revenue = ipc->st->revenue_total;
     int closing = ipc->st->closing;
     int fire    = ipc->st->fire_alarm;
+    int cashq   = ipc->st->cashier_queue_len;
 
     sem_unlock(ipc->sem_id);
 
@@ -213,21 +218,22 @@ static void snapshot_status(IPC *ipc,
     *out_revenue = revenue;
     *out_closing = closing;
     *out_fire = fire;
+    *out_cashq = cashq;
 }
 
 // Wypis koncowego statusu do logow i terminala
 static void print_final_status(IPC *ipc, const char *tag) {
-    int tables, total, occ, pend, res, res_rem, dishes, closing, fire;
+    int tables, total, occ, pend, res, res_rem, dishes, closing, fire, cashq;
     long long revenue;
-    snapshot_status(ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &revenue, &closing, &fire);
+    snapshot_status(ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &revenue, &closing, &fire, &cashq);
 
     log_line("manager",
-        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d revenue=%lld closing=%d fire=%d",
-        tag, tables, total, occ, pend, res, res_rem, dishes, revenue, closing, fire);
+        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d cashq=%d dishes=%d revenue=%lld closing=%d fire=%d",
+        tag, tables, total, occ, pend, res, res_rem, cashq, dishes, revenue, closing, fire);
 
     term_printf(C_YEL,
-        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d revenue=%lld closing=%d fire=%d\n",
-        tag, tables, total, occ, pend, res, res_rem, dishes, revenue, closing, fire);
+        "%s tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d cashq=%d dishes=%d revenue=%lld closing=%d fire=%d\n",
+        tag, tables, total, occ, pend, res, res_rem, cashq, dishes, revenue, closing, fire);
 }
 
 // Nieblokujace "zbieranie" zakonczonych procesow potomnych
@@ -304,8 +310,17 @@ static void send_reserve_tick(IPC *ipc) {
     t.kind  = MSG_RESERVE_TICK;
     t.pid   = getpid();
     t.value = 0;
-    if (msgsnd(ipc->msg_id, &t, msgsz(), IPC_NOWAIT) == -1) {
+    if (msgsnd(ipc->msg_work_req_id, &t, msgsz(), IPC_NOWAIT) == -1) {
         if (errno != EAGAIN) perror("manager msgsnd RESERVE_TICK");
+    }
+}
+
+static void sleep_us(int us) {
+    if (us <= 0) return;
+    struct timespec ts;
+    ts.tv_sec  = us / 1000000;
+    ts.tv_nsec = (long)(us % 1000000) * 1000L;
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
     }
 }
 
@@ -385,6 +400,7 @@ int main(int argc, char **argv) {
     ipc.st->fire_alarm = 0;
     ipc.st->closing = 0;
     ipc.st->revenue_total = 0;
+    ipc.st->cashier_queue_len = 0;
     sem_unlock(ipc.sem_id);
 
     log_line("manager", "Manager started pid=%d. Spawning worker+cashier.", (int)getpid());
@@ -446,6 +462,25 @@ int main(int argc, char **argv) {
             kill(getpid(), SIGSTOP);
         }
 
+        if (g_close && close_started) {
+            g_close = 0;
+            stop_spawning = 1;
+
+            sem_lock(ipc.sem_id);
+            ipc.st->closing = 1;
+            sem_unlock(ipc.sem_id);
+
+            long long dd = now_ms() + DRAIN_TIMEOUT_MS;
+            if (drain_deadline < 0 || dd < drain_deadline) drain_deadline = dd;
+
+            last_progress_at = now_ms();
+            last_occ = -1;
+            last_pend = -1;
+
+            print_final_status(&ipc, "CLOSE_STARTED_STATUS (NORMAL_CLOSE)");
+            term_printf(C_YEL, "[CLOSE] normal close: stop spawning, draining (timeout=%dms)\n", DRAIN_TIMEOUT_MS);
+        }
+
         if (g_close && !close_started) {
             g_close = 0;
             close_started = 1;
@@ -468,6 +503,10 @@ int main(int argc, char **argv) {
             close_started = 1;
             stop_spawning = 1;
 
+            sem_lock(ipc.sem_id);
+            ipc.st->closing = 1;
+            sem_unlock(ipc.sem_id);
+
             drain_deadline = now_ms() + 60000;
             last_progress_at = now_ms();
             last_occ = -1;
@@ -480,13 +519,13 @@ int main(int argc, char **argv) {
         long long now = now_ms();
 
         if (now - last_status >= 1000) {
-            int tables, total, occ, pend, res, res_rem, dishes, closing, fire;
+            int tables, total, occ, pend, res, res_rem, dishes, closing, fire, cashq;
             long long revenue;
-            snapshot_status(&ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &revenue, &closing, &fire);
+            snapshot_status(&ipc, &tables, &total, &occ, &pend, &res, &res_rem, &dishes, &revenue, &closing, &fire, &cashq);
 
             term_printf(C_CYN,
-                "[STATUS] tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d dishes=%d revenue=%lld closing=%d fire=%d\n",
-                tables, total, occ, pend, res, res_rem, dishes, revenue, closing, fire);
+                "[STATUS] tables=%d seats=%d occ=%d pend=%d res=%d reserve_remaining=%d cashq=%d dishes=%d revenue=%lld closing=%d fire=%d\n",
+                tables, total, occ, pend, res, res_rem, cashq, dishes, revenue, closing, fire);
 
             last_status = now;
 
@@ -537,70 +576,153 @@ int main(int argc, char **argv) {
             break;
         }
 
-        if (!stop_spawning && now >= next_spawn_at) {
-
+        if (!stop_spawning) {
             int cap = (int)(sizeof(client_pids)/sizeof(client_pids[0]));
 
-            if (spawned >= cap) {
-                stop_spawning = 1;
+            if (clients > 0) {
+                int burst_limit = 200;
 
-                if (!close_started && clients == 0) {
-                    close_started = 1;
+                while (!stop_spawning && i <= clients && spawned < cap && burst_limit-- > 0) {
+                    char idbuf[32];
+                    snprintf(idbuf, sizeof(idbuf), "%d", i);
 
-                    drain_deadline = now_ms() + 60000;
-                    last_progress_at = now_ms();
-                    last_occ = -1;
-                    last_pend = -1;
+                    pid_t cpid = fork();
+                    if (cpid == -1) {
+                        fprintf(stderr, "[WARN] fork() failed at i=%d: %s. Stop spawning.\n", i, strerror(errno));
+                        log_line("manager", "WARN: fork failed at i=%d: %s. Stop spawning.", i, strerror(errno));
 
-                    print_final_status(&ipc, "CLOSE_STARTED_STATUS (MAX_CLIENT_PROCS_REACHED)");
-                    term_printf(C_YEL,
-                        "[CLOSE] max client procs reached (%d): stop spawning, draining (timeout=%dms)\n",
-                        cap, 60000);
+                        stop_spawning = 1;
+
+                        if (!close_started) {
+                            close_started = 1;
+
+                            sem_lock(ipc.sem_id);
+                            ipc.st->closing = 1;
+                            sem_unlock(ipc.sem_id);
+
+                            drain_deadline = now_ms() + 60000;
+                            last_progress_at = now_ms();
+                            last_occ = -1;
+                            last_pend = -1;
+
+                            print_final_status(&ipc, "CLOSE_STARTED_STATUS (FORK_FAILED)");
+                            term_printf(C_YEL, "[CLOSE] fork failed: stop spawning, draining (timeout=60000ms)\n");
+                        }
+                        break;
+                    } else if (cpid == 0) {
+                        execl("./bin/client", "./bin/client", idbuf, (char*)NULL);
+                        perror("exec client");
+                        _exit(127);
+                    }
+
+                    client_pids[spawned] = cpid;
+                    tracks[spawned].pid = cpid;
+                    tracks[spawned].stage = 0;
+                    tracks[spawned].group_size = 0;
+                    tracks[spawned].table_index = -1;
+                    spawned++;
+
+                    log_line("manager", "Spawned client %d pid=%d (BURST)", i, (int)cpid);
+
+                    i++;
+
+                    sleep_us(CLIENT_BURST_US);
                 }
 
-                next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
-            } else {
-                char idbuf[32];
-                snprintf(idbuf, sizeof(idbuf), "%d", i);
-
-                pid_t cpid = fork();
-                if (cpid == -1) {
-                    fprintf(stderr, "[WARN] fork() failed at i=%d: %s. Stop spawning.\n", i, strerror(errno));
-                    log_line("manager", "WARN: fork failed at i=%d: %s. Stop spawning.", i, strerror(errno));
-
+                if (spawned >= cap) {
                     stop_spawning = 1;
 
-                    if (!close_started) {
+                    if (!close_started && clients == 0) {
                         close_started = 1;
+
+                        sem_lock(ipc.sem_id);
+                        ipc.st->closing = 1;
+                        sem_unlock(ipc.sem_id);
 
                         drain_deadline = now_ms() + 60000;
                         last_progress_at = now_ms();
                         last_occ = -1;
                         last_pend = -1;
 
-                        print_final_status(&ipc, "CLOSE_STARTED_STATUS (FORK_FAILED)");
-                        term_printf(C_YEL, "[CLOSE] fork failed: stop spawning, draining (timeout=60000ms)\n");
+                        print_final_status(&ipc, "CLOSE_STARTED_STATUS (MAX_CLIENT_PROCS_REACHED)");
+                        term_printf(C_YEL,
+                            "[CLOSE] max client procs reached (%d): stop spawning, draining (timeout=%dms)\n",
+                            cap, 60000);
                     }
-
-                    next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
-                    continue;
-                } else if (cpid == 0) {
-                    execl("./bin/client", "./bin/client", idbuf, (char*)NULL);
-                    perror("exec client");
-                    _exit(127);
                 }
+            } else {
+                // Tryb ciagly: losowe przyjscia klientow
+                if (now >= next_spawn_at) {
 
-                client_pids[spawned] = cpid;
-                tracks[spawned].pid = cpid;
-                tracks[spawned].stage = 0;
-                tracks[spawned].group_size = 0;
-                tracks[spawned].table_index = -1;
-                spawned++;
+                    if (spawned >= cap) {
+                        stop_spawning = 1;
 
-                log_line("manager", "Spawned client %d pid=%d", i, (int)cpid);
+                        if (!close_started && clients == 0) {
+                            close_started = 1;
 
-                i++;
-                next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
+                            sem_lock(ipc.sem_id);
+                            ipc.st->closing = 1;
+                            sem_unlock(ipc.sem_id);
+
+                            drain_deadline = now_ms() + 60000;
+                            last_progress_at = now_ms();
+                            last_occ = -1;
+                            last_pend = -1;
+
+                            print_final_status(&ipc, "CLOSE_STARTED_STATUS (MAX_CLIENT_PROCS_REACHED)");
+                            term_printf(C_YEL,
+                                "[CLOSE] max client procs reached (%d): stop spawning, draining (timeout=%dms)\n",
+                                cap, 60000);
+                        }
+
+                        next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
+                    } else {
+                        char idbuf[32];
+                        snprintf(idbuf, sizeof(idbuf), "%d", i);
+
+                        pid_t cpid = fork();
+                        if (cpid == -1) {
+                            fprintf(stderr, "[WARN] fork() failed at i=%d: %s. Stop spawning.\n", i, strerror(errno));
+                            log_line("manager", "WARN: fork failed at i=%d: %s. Stop spawning.", i, strerror(errno));
+
+                            stop_spawning = 1;
+
+                            if (!close_started) {
+                                close_started = 1;
+
+                                sem_lock(ipc.sem_id);
+                                ipc.st->closing = 1;
+                                sem_unlock(ipc.sem_id);
+
+                                drain_deadline = now_ms() + 60000;
+                                last_progress_at = now_ms();
+                                last_occ = -1;
+                                last_pend = -1;
+
+                                print_final_status(&ipc, "CLOSE_STARTED_STATUS (FORK_FAILED)");
+                                term_printf(C_YEL, "[CLOSE] fork failed: stop spawning, draining (timeout=60000ms)\n");
+                            }
+
+                            next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
+                        } else if (cpid == 0) {
+                            execl("./bin/client", "./bin/client", idbuf, (char*)NULL);
+                            perror("exec client");
+                            _exit(127);
+                        } else {
+                            client_pids[spawned] = cpid;
+                            tracks[spawned].pid = cpid;
+                            tracks[spawned].stage = 0;
+                            tracks[spawned].group_size = 0;
+                            tracks[spawned].table_index = -1;
+                            spawned++;
+
+                            log_line("manager", "Spawned client %d pid=%d", i, (int)cpid);
+
+                            i++;
+                            next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
+                        }
+                    }
+                }
             }
         }
 
