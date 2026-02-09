@@ -334,6 +334,13 @@ Opis: 5000 klientów pojawia się niemal natychmiast (ARR_MIN_MS=0, ARR_MAX_MS=0
 Parametry uruchomienia:  ./bin/manager 1000 1000 1000 1000 5000 0 0 0
 
 ```text
+grep "left table" logs/client.log | wc -l
+4742
+grep "reserved" logs/client.log | wc -l
+4742
+```
+
+```text
 LIMIT_REACHED_STATUS (STOP_SPAWNING) tables=4000 seats=10000 occ=300 pend=9122 res=0 reserve_remaining=0 cashq=4561 dishes=0 revenue=4538 closing=0 fire=0
 [LIMIT] limit reached: stop spawning, continue service until all clients exit
 [STATUS] tables=4000 seats=10000 occ=304 pend=9118 res=0 reserve_remaining=0 cashq=4558 dishes=0 revenue=4580 closing=0 fire=0
@@ -354,7 +361,7 @@ LIMIT_REACHED_STATUS (STOP_SPAWNING) tables=4000 seats=10000 occ=300 pend=9122 r
 [STATUS] tables=4000 seats=10000 occ=568 pend=7648 res=0 reserve_remaining=0 cashq=3809 dishes=1237 revenue=27462 closing=0 fire=0
 ```
 
-Wnioski: System działa stabilnie przy bardzo dużym obciążeniu; kolejka do kasjera jest widoczna w statusie i stopniowo maleje, a jednocześnie rosną dishes i revenue, co potwierdza ciągłą obsługę klientów. TEST ZDANY.
+Wnioski: System działa stabilnie przy bardzo dużym obciążeniu; kolejka do kasjera jest widoczna w statusie i stopniowo maleje, a jednocześnie rosną dishes i revenue, co potwierdza ciągłą obsługę klientów. Ilość klientów którzy weszli do lokalu = ilości klientów którzy opuścili lokal (z tego wynika że każdy proces został poprawnie zakończony). TEST ZDANY.
 
 **Test 3 - Odsetek klientów bez zamówienia około 5%**
 
