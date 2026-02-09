@@ -346,13 +346,13 @@ int main(int argc, char **argv) {
     int seated = 0;
     int pending = 0;
 
-    unsigned h = (unsigned)(now_ms() ^ (unsigned)getpid() ^ (unsigned)(id * 2654435761u));
+    /*unsigned h = (unsigned)(now_ms() ^ (unsigned)getpid() ^ (unsigned)(id * 2654435761u));
     int no_order = (h % 100) < 5;
     if (no_order) {
         log_line("client", "Client %d: no order (leaves immediately)", id);
         ipc_close(&ipc);
         return 0;
-    }
+    }*/
 
     int dish_id = pick_menu_id(id);
     MenuItem item = menu[dish_id];
