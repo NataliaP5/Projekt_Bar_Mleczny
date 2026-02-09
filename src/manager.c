@@ -619,13 +619,13 @@ int main(int argc, char **argv) {
                 }
             }
 
-            // Brak postepu: w tym momencie ma sens niezaleznie od shm->closing,
-            if (close_started && (occ > 0 || pend > 0) &&
+            // Brak postepu: tylko w FORCE (drugie Ctrl+C) i tylko gdy jest "korek" (pend/cashq).
+            if (force_close && (pend > 0 || cashq > 0) &&
                 last_progress_at > 0 && (now - last_progress_at) >= DRAIN_NO_PROGRESS_MS) {
 
                 term_printf(C_YEL, "[CLOSE] no progress for %dms -> terminate clients (SIGTERM)\n",
                             DRAIN_NO_PROGRESS_MS);
-                log_line("manager", "NO PROGRESS %dms: terminate clients (SIGTERM).", DRAIN_NO_PROGRESS_MS);
+                log_line("manager", "NO PROGRESS %dms (FORCE): terminate clients (SIGTERM).", DRAIN_NO_PROGRESS_MS);
 
                 for (int k = 0; k < spawned; k++) {
                     if (kill(client_pids[k], SIGTERM) == -1) {

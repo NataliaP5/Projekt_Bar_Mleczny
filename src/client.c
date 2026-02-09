@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <time.h>
 
-#define WAIT_SEAT_TIMEOUT_MS 8000
+//#define WAIT_SEAT_TIMEOUT_MS 8000
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_term(int sig) { (void)sig; g_stop = 1; }
@@ -358,20 +358,22 @@ int main(int argc, char **argv) {
     int dish_id = pick_menu_id(id);
     MenuItem item = menu[dish_id];
     int amount = item.price * group;
-    long long seat_deadline = now_ms() + WAIT_SEAT_TIMEOUT_MS;
+   // long long seat_deadline = now_ms() + WAIT_SEAT_TIMEOUT_MS;
 
     while (!g_stop) {
         int picked = pick_table_and_reserve(&ipc, group, &table);
         if (picked >= 0) { pending = 1; break; }
-
-        long long now = now_ms();
+       /* long long now = now_ms();
         if (now >= seat_deadline) break;
 
         int remaining = (int)(seat_deadline - now);
         int wr = sem_timedwait_event_ms(ipc.sem_id, SEM_TABLE_EVENT, remaining);
         if (wr < 0) {
             continue;
-        }
+        }*/
+        sem_timedwait_event_ms(ipc.sem_id, SEM_TABLE_EVENT, 1000);
+
+        if (is_fire_now(&ipc)) break;
     }
 
     if (!pending || g_stop) {
@@ -380,9 +382,9 @@ int main(int argc, char **argv) {
             log_line("client", "Client %d evacuated before reserving seat", id);
         } else if (g_stop) {
             log_line("client", "Client %d stopped before reserving seat", id);
-        } else {
+        }/* else {
             log_line("client", "Client %d left (no seat after %dms)", id, WAIT_SEAT_TIMEOUT_MS);
-        }
+        }*/
         ipc_close(&ipc);
         return 0;
     }
