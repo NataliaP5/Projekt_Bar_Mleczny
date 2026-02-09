@@ -302,6 +302,64 @@ static void stop_pid(IPC *ipc, ClientTrack *tracks, int n,
     if (w == pid) cleanup_if_needed(ipc, tracks, n, w, "stop_pid_kill");
 }
 
+// Szybkie masowe zatrzymanie klientow
+static int pid_alive(pid_t pid) {
+    if (pid <= 0) return 0;
+    if (kill(pid, 0) == 0) return 1;
+    if (errno == EPERM) return 1;
+    return 0;
+}
+
+static void stop_clients_bulk(IPC *ipc, ClientTrack *tracks, int n, pid_t *pids, int grace_ms) {
+    if (n <= 0) return;
+
+    // 1) SIGTERM do wszystkich klientow naraz
+    for (int i = 0; i < n; i++) {
+        pid_t pid = pids[i];
+        if (!pid_alive(pid)) continue;
+        if (kill(pid, SIGTERM) == -1) {
+            if (errno != ESRCH) perror("kill client SIGTERM");
+        }
+    }
+
+    // 2) Chwila na wyjscie i zbieranie zombie
+    long long deadline = now_ms() + (long long)grace_ms;
+    while (now_ms() < deadline) {
+        reap_nonblocking(ipc, tracks, n);
+
+        int any = 0;
+        for (int i = 0; i < n; i++) {
+            if (pid_alive(pids[i])) { any = 1; break; }
+        }
+        if (!any) return;
+
+        sleep_ms(20);
+    }
+
+    // 3) SIGKILL do tych co zostali
+    for (int i = 0; i < n; i++) {
+        pid_t pid = pids[i];
+        if (!pid_alive(pid)) continue;
+        if (kill(pid, SIGKILL) == -1) {
+            if (errno != ESRCH) perror("kill client SIGKILL");
+        }
+    }
+
+    // 4) Krotkie reap po SIGKILL
+    long long deadline2 = now_ms() + 800;
+    while (now_ms() < deadline2) {
+        reap_nonblocking(ipc, tracks, n);
+
+        int any = 0;
+        for (int i = 0; i < n; i++) {
+            if (pid_alive(pids[i])) { any = 1; break; }
+        }
+        if (!any) break;
+
+        sleep_ms(20);
+    }
+}
+
 // Cykliczne wysylanie "ticka" rezerwacji
 static void send_reserve_tick(IPC *ipc) {
     Msg t;
@@ -417,6 +475,10 @@ int main(int argc, char **argv) {
     int stop_spawning = 0;
     int close_started = 0;
 
+    // Dwa etapy Ctrl+C (graceful i force)
+    int ctrlc_requested = 0;   // czy bylo juz Ctrl+C (tryb graceful)
+    int force_close = 0;       // czy przeszlismy na force
+
     // Harmonogram generowania klientow
     long long next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
     long long last_tick = now_ms();
@@ -426,6 +488,9 @@ int main(int argc, char **argv) {
     long long last_progress_at = -1;
     int last_occ = -1;
     int last_pend = -1;
+
+    // Czy byl pozar (zeby zrobic sensowny final status dopiero po sprzataniu)
+    int fire_happened = 0;
 
     while (!g_fire) {
         if (g_usr1) {
@@ -462,41 +527,51 @@ int main(int argc, char **argv) {
             kill(getpid(), SIGSTOP);
         }
 
-        if (g_close && close_started) {
+        // SIGINT (Ctrl+C): dwustopniowe zamykanie
+        if (g_close) {
             g_close = 0;
+
+            // Zawsze przestajemy spawnowac po Ctrl+C
             stop_spawning = 1;
 
-            sem_lock(ipc.sem_id);
-            ipc.st->closing = 1;
-            sem_unlock(ipc.sem_id);
+            // Jesli jeszcze nie bylo Ctrl+C -> GRACEFUL
+            if (!ctrlc_requested) {
+                ctrlc_requested = 1;
+                close_started = 1;
 
-            long long dd = now_ms() + DRAIN_TIMEOUT_MS;
-            if (drain_deadline < 0 || dd < drain_deadline) drain_deadline = dd;
+                drain_deadline = -1; // brak timeoutu w trybie graceful
+                last_progress_at = now_ms();
+                last_occ = -1;
+                last_pend = -1;
 
-            last_progress_at = now_ms();
-            last_occ = -1;
-            last_pend = -1;
+                print_final_status(&ipc, "CLOSE_STARTED_STATUS (GRACEFUL_CTRL_C)");
+                term_printf(C_YEL,
+                    "[CLOSE] graceful close: stop spawning, continue service until empty (Ctrl+C again = FORCE)\n");
+                log_line("manager", "Ctrl+C: GRACEFUL close started (no closing flag).");
+            } else {
+                // Drugie Ctrl+C -> FORCE
+                if (!force_close) {
+                    force_close = 1;
 
-            print_final_status(&ipc, "CLOSE_STARTED_STATUS (NORMAL_CLOSE)");
-            term_printf(C_YEL, "[CLOSE] normal close: stop spawning, draining (timeout=%dms)\n", DRAIN_TIMEOUT_MS);
-        }
+                    sem_lock(ipc.sem_id);
+                    ipc.st->closing = 1;
+                    sem_unlock(ipc.sem_id);
 
-        if (g_close && !close_started) {
-            g_close = 0;
-            close_started = 1;
-            stop_spawning = 1;
+                    drain_deadline = now_ms() + DRAIN_TIMEOUT_MS; // timeout tylko w force
+                    last_progress_at = now_ms();
+                    last_occ = -1;
+                    last_pend = -1;
 
-            sem_lock(ipc.sem_id);
-            ipc.st->closing = 1;
-            sem_unlock(ipc.sem_id);
-
-            drain_deadline = now_ms() + DRAIN_TIMEOUT_MS;
-            last_progress_at = now_ms();
-            last_occ = -1;
-            last_pend = -1;
-
-            print_final_status(&ipc, "CLOSE_STARTED_STATUS (NORMAL_CLOSE)");
-            term_printf(C_YEL, "[CLOSE] normal close: stop spawning, draining (timeout=%dms)\n", DRAIN_TIMEOUT_MS);
+                    print_final_status(&ipc, "CLOSE_FORCE_STATUS (CTRL_C_AGAIN)");
+                    term_printf(C_YEL,
+                        "[CLOSE] FORCE close: closing=1, draining (timeout=%dms)\n",
+                        DRAIN_TIMEOUT_MS);
+                    log_line("manager", "Ctrl+C AGAIN: FORCE close started (closing=1).");
+                } else {
+                    // Kolejne Ctrl+C - juz force - nie zmienia sie nic
+                    term_printf(C_YEL, "[CLOSE] FORCE already active\n");
+                }
+            }
         }
 
         if (!close_started && clients > 0 && i > clients) {
@@ -536,7 +611,7 @@ int main(int argc, char **argv) {
             if (close_started && occ == 0 && pend == 0) {
                 int alive = count_alive_clients(client_pids, spawned);
                 if (alive == 0) {
-                    term_printf(C_YEL, "[CLOSE] LIMIT REACHED, all served\n");
+                    term_printf(C_YEL, "[CLOSE] all clients exited\n");
                     print_final_status(&ipc, "FINAL_STATUS (END)");
                     break;
                 } else {
@@ -544,7 +619,8 @@ int main(int argc, char **argv) {
                 }
             }
 
-            if (close_started && closing == 1 && (occ > 0 || pend > 0) &&
+            // Brak postepu: w tym momencie ma sens niezaleznie od shm->closing,
+            if (close_started && (occ > 0 || pend > 0) &&
                 last_progress_at > 0 && (now - last_progress_at) >= DRAIN_NO_PROGRESS_MS) {
 
                 term_printf(C_YEL, "[CLOSE] no progress for %dms -> terminate clients (SIGTERM)\n",
@@ -560,6 +636,7 @@ int main(int argc, char **argv) {
             }
         }
 
+        // Timeout tylko w FORCE (drain_deadline > 0). W GRACEFUL/LIMIT_REACHED jest -1.
         if (close_started && drain_deadline > 0 && now >= drain_deadline) {
             term_printf(C_YEL, "[CLOSE] drain timeout -> terminate clients (SIGTERM)\n");
             log_line("manager", "DRAIN TIMEOUT: terminate clients (SIGTERM).");
@@ -643,7 +720,7 @@ int main(int argc, char **argv) {
                     next_spawn_at = now_ms() + next_arrival_ms(arr_min, arr_max);
 
                     if ((spawned % 64) == 0) {
-                        // Zbierz zombie i odbierz wiadomosci - inaczej wszystko "stoi" w jednym miejscu
+                        // Zbierz zombie i odbierz wiadomosci
                         reap_nonblocking(&ipc, tracks, spawned);
                         drain_manager_msgs(&ipc, tracks, spawned, reserve_target);
                         sleep_us(CLIENT_BURST_US);
@@ -761,6 +838,8 @@ int main(int argc, char **argv) {
     }
 
     if (g_fire) {
+        fire_happened = 1;
+
         term_printf(C_RED, "[FIRE] evacuating clients NOW!\n");
         log_line("manager", "FIRE received -> evacuating clients NOW.");
 
@@ -768,17 +847,11 @@ int main(int argc, char **argv) {
         ipc.st->fire_alarm = 1;
         ipc.st->closing = 1;
         sem_unlock(ipc.sem_id);
-
-        print_final_status(&ipc, "FINAL_STATUS (FIRE)");
-
-        for (int k = 0; k < spawned; k++) {
-            if (kill(client_pids[k], SIGTERM) == -1) {
-                if (errno != ESRCH) perror("kill client");
-            }
-        }
     }
 
-    for (int k = 0; k < spawned; k++) stop_pid(&ipc, tracks, spawned, client_pids[k], "client", 300);
+    // Szybkie zamykanie klientow: zamiast czekac po 300ms na kazdego osobno
+    stop_clients_bulk(&ipc, tracks, spawned, client_pids, 300);
+
     stop_pid(&ipc, tracks, spawned, worker, "worker", 500);
     stop_pid(&ipc, tracks, spawned, cashier, "cashier", 500);
 
@@ -791,6 +864,15 @@ int main(int argc, char **argv) {
         if (w == -1 && errno == EINTR) continue;
         if (w == -1 && errno == ECHILD) break;
         if (w == -1) { perror("waitpid"); break; }
+    }
+
+    // Final status po pozarze: ma reprezentowac stan PO ewakuacji/posprzataniu
+    if (fire_happened) {
+        sem_lock(ipc.sem_id);
+        ipc.st->cashier_queue_len = 0;
+        sem_unlock(ipc.sem_id);
+
+        print_final_status(&ipc, "FINAL_STATUS (FIRE_END)");
     }
 
     log_line("manager", "Cleaning IPC and exiting.");

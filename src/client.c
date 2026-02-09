@@ -30,6 +30,7 @@ static void cashier_queue_inc(IPC *ipc) {
     ipc->st->cashier_queue_len++;
     sem_unlock(ipc->sem_id);
 }
+
 static void cashier_queue_dec_safe(IPC *ipc) {
     sem_lock(ipc->sem_id);
     if (ipc->st->cashier_queue_len > 0) ipc->st->cashier_queue_len--;
@@ -91,7 +92,6 @@ static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount
     m.value = amount;
     m.dish_id = dish_id;
 
-    // Klient staje do kolejki do kasjera (widoczne w shm)
     cashier_queue_inc(ipc);
 
     for (;;) {
@@ -388,7 +388,7 @@ int main(int argc, char **argv) {
     }
 
     log_line("client", "Client %d group=%d reserved table=%d (pending)", id, group, table);
-    log_line("client", "Client %d: ordered '%s' price=%d per person (group=%d total=%d)",
+    log_line("client", "Client %d: selected '%s' price=%d per person (group=%d total=%d)",
              id, item.name, item.price, group, amount);
     notify_manager(&ipc, MSG_CLIENT_PENDING, me, group, table, 0);
 
@@ -402,6 +402,8 @@ int main(int argc, char **argv) {
         ipc_close(&ipc);
         return 0;
     }
+
+    log_line("client", "Client %d: PAID for '%s' total=%d", id, item.name, amount);
 
     if (!send_serve_request(&ipc, me, group, table) || g_stop) {
         int fire = is_fire_now(&ipc);
