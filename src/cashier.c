@@ -5,7 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CASHIER_SERVICE_MS 2 // czas obslugi jednego klienta (0 = natychmiast)
+#define CASHIER_SERVICE_MS 1
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_term(int sig){ (void)sig; g_stop = 1; }

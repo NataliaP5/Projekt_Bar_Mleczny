@@ -51,7 +51,7 @@ static void notify_manager(IPC *ipc, int kind, pid_t me, int group, int table, i
         if (msgsnd(ipc->msg_id, &m, msgsz(), 0) == 0) return;
 
         if (errno == EINTR) {
-            if (is_fire_now(ipc) || g_stop) return;
+            if (is_fire_now(ipc)) return;
             continue;
         }
 
@@ -61,13 +61,13 @@ static void notify_manager(IPC *ipc, int kind, pid_t me, int group, int table, i
 }
 
 // wait_reply na dowolnej kolejce (reply queue)
-static int wait_reply_on_queue(int msg_id, long mytype, int expected_kind, Msg *out) {
-    while (!g_stop) {
+static int wait_reply_on_queue(IPC *ipc, int msg_id, long mytype, int expected_kind, Msg *out) {
+    for (;;) {
         Msg rep;
         ssize_t r = msgrcv(msg_id, &rep, msgsz(), mytype, 0);
         if (r == -1) {
             if (errno == EINTR) {
-                if (g_stop) return 0;
+                if (is_fire_now(ipc)) return 0;
                 continue;
             }
             perror("client msgrcv");
@@ -78,7 +78,6 @@ static int wait_reply_on_queue(int msg_id, long mytype, int expected_kind, Msg *
             return 1;
         }
     }
-    return 0;
 }
 
 static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount, int dish_id) {
@@ -98,7 +97,7 @@ static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount
         if (msgsnd(ipc->msg_pay_req_id, &m, msgsz(), 0) == 0) break;
 
         if (errno == EINTR) {
-            if (g_stop || is_fire_now(ipc)) {
+            if (is_fire_now(ipc)) {
                 cashier_queue_dec_safe(ipc);
                 return 0;
             }
@@ -111,7 +110,7 @@ static int send_pay_request(IPC *ipc, pid_t me, int group, int table, int amount
     }
 
     Msg rep;
-    if (!wait_reply_on_queue(ipc->msg_pay_rep_id, (long)me, MSG_PAY_REPLY, &rep)) {
+    if (!wait_reply_on_queue(ipc, ipc->msg_pay_rep_id, (long)me, MSG_PAY_REPLY, &rep)) {
         cashier_queue_dec_safe(ipc);
         return 0;
     }
@@ -131,7 +130,7 @@ static int send_serve_request(IPC *ipc, pid_t me, int group, int table) {
         if (msgsnd(ipc->msg_work_req_id, &m, msgsz(), 0) == 0) break;
 
         if (errno == EINTR) {
-            if (g_stop || is_fire_now(ipc)) return 0;
+            if (is_fire_now(ipc)) return 0;
             continue;
         }
 
@@ -140,7 +139,7 @@ static int send_serve_request(IPC *ipc, pid_t me, int group, int table) {
     }
 
     Msg rep;
-    if (!wait_reply_on_queue(ipc->msg_work_rep_id, (long)me, MSG_SERVE_REPLY, &rep)) return 0;
+    if (!wait_reply_on_queue(ipc, ipc->msg_work_rep_id, (long)me, MSG_SERVE_REPLY, &rep)) return 0;
     return rep.value != 0;
 }
 
@@ -191,14 +190,14 @@ static void* eater_thread(void *vp) {
         (unsigned int)(a->person_idx * 2654435761u) ^
         (unsigned int)(a->client_id * 1103515245u);
 
-    int eat_sec = (rand_r(&seed) % 6) + 2;
+    int eat_sec = 1;
 
     log_line("client", "Client %d | person %d: eating %d sec",
              a->client_id, a->person_idx, eat_sec);
 
     for (int i = 0; i < eat_sec; i++) {
         if (g_stop) break;
-        sleep(1);
+        usleep(10);
     }
 
     pthread_mutex_lock(&s->m);
@@ -376,7 +375,7 @@ int main(int argc, char **argv) {
         if (is_fire_now(&ipc)) break;
     }
 
-    if (!pending || g_stop) {
+    if (!pending) {
         int fire = is_fire_now(&ipc);
         if (fire) {
             log_line("client", "Client %d evacuated before reserving seat", id);
@@ -394,7 +393,7 @@ int main(int argc, char **argv) {
              id, item.name, item.price, group, amount);
     notify_manager(&ipc, MSG_CLIENT_PENDING, me, group, table, 0);
 
-    if (!send_pay_request(&ipc, me, group, table, amount, dish_id) || g_stop) {
+    if (!send_pay_request(&ipc, me, group, table, amount, dish_id)) {
         int fire = is_fire_now(&ipc);
         if (fire) log_line("client", "Client %d PAY interrupted by FIRE -> cancel pending", id);
         else      log_line("client", "Client %d PAY interrupted/failed -> cancel pending", id);
@@ -407,7 +406,7 @@ int main(int argc, char **argv) {
 
     log_line("client", "Client %d: PAID for '%s' total=%d", id, item.name, amount);
 
-    if (!send_serve_request(&ipc, me, group, table) || g_stop) {
+    if (!send_serve_request(&ipc, me, group, table)) {
         int fire = is_fire_now(&ipc);
         if (fire) log_line("client", "Client %d SERVE interrupted by FIRE -> cancel pending", id);
         else      log_line("client", "Client %d SERVE interrupted/failed -> cancel pending", id);

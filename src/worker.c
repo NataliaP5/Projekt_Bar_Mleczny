@@ -105,8 +105,11 @@ int main(void) {
                     ok = 0;
                 } else {
                     Table *t = &ipc.st->tables[req.table_index];
-                    if (req.group_size < 1 || req.group_size > 3) ok = 0;
-                    else if (t->pending_seats < req.group_size) ok = 0;
+
+                    if (req.group_size < 1 || req.group_size > 4) ok = 0;
+
+                    else if (t->capacity < req.group_size) ok = 0;
+
                     if (ipc.st->fire_alarm || ipc.st->closing) ok = 0;
                 }
                 sem_unlock(ipc.sem_id);
