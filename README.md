@@ -534,7 +534,8 @@ Wnioski: Systemy wieloprocesowe z SysV IPC wymagają bardzo ostrożnej synchroni
 Poniższe elementy są ponad minimum opisu tematu i służą zwiększeniu stabilności/testowalności lub czytelności działania symulacji („wyróżniające elementy”):
 
 - Cykliczny status managera oraz kolorowanie wyjścia terminala - okresowo wypisywane podsumowanie stanu (tables, seats, occ, pend, res, reserve_remaining, dishes, revenue, fire) pozwala szybko ocenić, czy system się nie „zatrzymał” oraz jak sygnały wpływają na symulację.
-  <img width="1166" height="300" alt="image" src="https://github.com/user-attachments/assets/713ae083-6b6f-4de7-823d-8592a431b434" />
+  <img width="1313" height="338" alt="image" src="https://github.com/user-attachments/assets/ec7c7019-f5b4-4261-97fd-6367a3fa73f2" />
+
 
 - Szczegółowe logowanie per-proces - osobne pliki logs/*.log dla managera/worker/cashier/klientów z timestampami i zdarzeniami (ułatwia analizę przebiegu i dowodzenie testów).
 
